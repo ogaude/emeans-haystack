@@ -2,14 +2,36 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 from typing import Any, Literal
 
 import numpy as np
 from haystack import Document, component, default_from_dict, default_to_dict, logging
 
-from haystack_integrations.components.preprocessors.emeans._utils import check_positive_int
+from haystack_integrations.components.preprocessors.emeans._backend import cpu_assigner
+from haystack_integrations.components.preprocessors.emeans._model import EmeansModel, load_model
+from haystack_integrations.components.preprocessors.emeans._utils import (
+    check_positive_int,
+    extract_embeddings,
+    normalize_rows,
+)
 
 logger = logging.getLogger(__name__)
+
+_MODEL_CACHE: dict[str, tuple[int, EmeansModel]] = {}
+
+
+def _cached_model(path: str) -> EmeansModel:
+    """Load the model at `path`, reusing the previous load while the file is unchanged."""
+    if not os.path.exists(path):
+        return load_model(path)  # raises FileNotFoundError
+    mtime = os.stat(path).st_mtime_ns
+    cached = _MODEL_CACHE.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    model = load_model(path)
+    _MODEL_CACHE[path] = (mtime, model)
+    return model
 
 
 def _cluster_id_of(doc: Document) -> int | None:
@@ -22,8 +44,6 @@ def _cluster_id_of(doc: Document) -> int | None:
     if isinstance(value, float) and value.is_integer():
         return int(value)
     return None
-
-
 
 
 @component
@@ -95,7 +115,6 @@ class EmeansClusterRanker:
         :returns: A dictionary with the kept input `documents`, unchanged.
         """
         check_positive_int("top_k", top_k, allow_none=True)
-        del model_path  # model assignment is added separately
         limit = top_k if top_k is not None else self.top_k
         if not documents:
             return {"documents": []}
@@ -111,10 +130,26 @@ class EmeansClusterRanker:
                 n=n_unscored,
             )
 
+        cluster_ids = [_cluster_id_of(doc) for doc in documents]
+        n_assigned = 0
+        path = model_path if model_path is not None else self.model_path
+        if path is not None:
+            todo = [i for i, c in enumerate(cluster_ids) if c is None and documents[i].embedding is not None]
+            if todo:
+                model = _cached_model(path)
+                subset = [documents[i] for i in todo]
+                positions, x = extract_embeddings(subset, expected_dim=model.d)
+                if model.spherical:
+                    x = normalize_rows(x, [subset[p].id for p in positions])
+                _, labels = cpu_assigner(model.centroids, spherical=model.spherical).assign(x)
+                for p, label in zip(positions, labels, strict=True):
+                    cluster_ids[todo[p]] = int(label)
+                n_assigned = len(positions)
+
         groups: dict[tuple[str, int], int] = {}
         n_missing = 0
-        for i, doc in enumerate(documents):
-            cluster = _cluster_id_of(doc)
+        for i in range(len(documents)):
+            cluster = cluster_ids[i]
             if cluster is None:
                 n_missing += 1
                 if self.missing_cluster == "drop":
@@ -124,11 +159,12 @@ class EmeansClusterRanker:
                 group = ("c", cluster)
             if group not in groups or key(i) < key(groups[group]):
                 groups[group] = i
-        if n_missing:
+        if n_missing or n_assigned:
             kept = n_missing if self.missing_cluster == "keep" else 0
             logger.warning(
-                "{n} documents have no usable cluster_id (assigned 0, kept {kept}, dropped {dropped}).",
-                n=n_missing,
+                "{n} documents have no usable cluster_id (assigned {assigned}, kept {kept}, dropped {dropped}).",
+                n=n_missing + n_assigned,
+                assigned=n_assigned,
                 kept=kept,
                 dropped=n_missing - kept,
             )
