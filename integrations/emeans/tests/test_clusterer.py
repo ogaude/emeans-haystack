@@ -286,3 +286,80 @@ class TestSerialisation:
         path = tmp_path / "never.npz"
         EmeansDocumentClusterer(model_path=str(path))
         assert not path.exists()
+
+
+class TestFitIfMissing:
+    def test_missing_without_flag_raises(self, docs: list[Document], tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            EmeansDocumentClusterer(model_path=str(tmp_path / "m.npz")).run(documents=docs)
+
+    def test_fits_on_missing_and_matches_saved_file(self, docs: list[Document], tmp_path: Path) -> None:
+        path = str(tmp_path / "auto.npz")
+        comp = EmeansDocumentClusterer(model_path=path, fit_if_missing=True, fit_params={"k": 3})
+        out = comp.run(documents=docs)["documents"]
+        assert load_model(path).k == 3
+        assert all(d.meta["cluster_id"] in range(3) for d in out)
+        again = EmeansDocumentClusterer(model_path=path).run(documents=docs)["documents"]
+        assert [d.meta["cluster_id"] for d in out] == [d.meta["cluster_id"] for d in again]
+
+    def test_existing_file_is_not_refitted(
+        self, docs: list[Document], spherical_model: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        before = Path(spherical_model).read_bytes()
+        runs: list[int] = []
+        monkeypatch.setattr(EmeansFitter, "run", lambda _self, **_kw: runs.append(1))
+        comp = EmeansDocumentClusterer(model_path=spherical_model, fit_if_missing=True, fit_params={"k": 2})
+        comp.warm_up()
+        comp.run(documents=docs)
+        assert runs == []
+        assert Path(spherical_model).read_bytes() == before
+
+    def test_second_run_reuses_file(
+        self, docs: list[Document], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        comp = EmeansDocumentClusterer(model_path=str(tmp_path / "a.npz"), fit_if_missing=True, fit_params={"k": 3})
+        comp.run(documents=docs)
+        runs: list[int] = []
+        monkeypatch.setattr(EmeansFitter, "run", lambda _self, **_kw: runs.append(1))
+        comp.run(documents=docs)
+        assert runs == []
+
+    def test_race_with_other_writer(
+        self, docs: list[Document], spherical_model: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "raced.npz"
+
+        def losing_run(_self: EmeansFitter, **_kwargs: object) -> None:
+            target.write_bytes(Path(spherical_model).read_bytes())
+            raise FileExistsError(str(target))
+
+        monkeypatch.setattr(EmeansFitter, "run", losing_run)
+        comp = EmeansDocumentClusterer(model_path=str(target), fit_if_missing=True, fit_params={"k": 3})
+        out = comp.run(documents=docs)["documents"]
+        assert all(d.meta["cluster_id"] in range(4) for d in out)
+
+    @pytest.mark.parametrize(
+        "fit_params",
+        [
+            None,
+            {},
+            {"k": 0},
+            {"k": 2, "target_cluster_size": 5},
+            {"k": 2, "model_path": "x"},
+            {"k": 2, "overwrite": True},
+        ],
+    )
+    def test_invalid_fit_params(self, fit_params: dict | None) -> None:
+        with pytest.raises(ValueError):
+            EmeansDocumentClusterer(model_path="m.npz", fit_if_missing=True, fit_params=fit_params)
+
+    def test_euclidean_auto_fit(self, make_docs: MakeDocs, tmp_path: Path) -> None:
+        comp = EmeansDocumentClusterer(
+            model_path=str(tmp_path / "e.npz"),
+            fit_if_missing=True,
+            fit_params={"k": 3, "spherical": False},
+            return_distance=True,
+        )
+        out = comp.run(documents=make_docs(60, unit=False))["documents"]
+        assert not load_model(str(tmp_path / "e.npz")).spherical
+        assert all("cluster_distance" in d.meta for d in out)
