@@ -239,6 +239,22 @@ def test_load_bad_format_version(tmp_path: Path, version: object) -> None:
     check_fails(p, "format_version")
 
 
+@pytest.mark.parametrize("spherical", ["false", "0", 1, 0, None])
+def test_load_spherical_must_be_bool(tmp_path: Path, spherical: object) -> None:
+    p = write_raw(tmp_path / "sp.npz", unit_centroids() * 3, {"spherical": spherical})
+    check_fails(p, "metadata")
+
+
+@pytest.mark.parametrize("checksum", [None, 123, ["x"]])
+def test_load_checksum_must_be_string(tmp_path: Path, checksum: object) -> None:
+    p = write_raw(tmp_path / "cs.npz", unit_centroids(), {"centroids_sha256": checksum})
+    check_fails(p, "metadata")
+
+
+def test_check_order_metadata_before_shape(tmp_path: Path) -> None:
+    check_fails(write_raw(tmp_path / "o0.npz", unit_centroids(), {"spherical": "true", "k": 9}), "metadata")
+
+
 def test_load_wrong_shape(tmp_path: Path) -> None:
     p = write_raw(tmp_path / "s.npz", unit_centroids(3, 4), {"k": 5})
     check_fails(p, "shape")

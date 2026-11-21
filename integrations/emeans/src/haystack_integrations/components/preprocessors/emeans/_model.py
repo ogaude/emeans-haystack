@@ -37,7 +37,7 @@ METADATA_KEYS: tuple[str, ...] = (
     "recipe",
 )
 _COMPUTED_KEYS = ("format_version", "k", "d", "centroids_sha256", "created_at", "emeans_haystack_version")
-_REQUIRED_KEYS = ("format_version", "k", "d", "spherical")
+_REQUIRED_KEYS = ("format_version", "k", "d", "spherical", "centroids_sha256")
 _UNIT_NORM_TOLERANCE = 1e-3
 
 
@@ -62,7 +62,7 @@ class EmeansModel:
     @property
     def spherical(self) -> bool:
         """Whether the model clusters by cosine similarity."""
-        return bool(self.metadata["spherical"])
+        return self.metadata["spherical"] is True
 
 
 class ModelCache:
@@ -203,7 +203,7 @@ def load_model(path: str) -> EmeansModel:
     Read a model file written by `save_model` and validate it.
 
     Loading never unpickles anything, so a model file cannot run code. The checks run in this order: `file`,
-    `arrays`, `format_version`, `shape`, `finite`, `unit_norm`, `checksum`.
+    `arrays`, `format_version`, `metadata`, `shape`, `finite`, `unit_norm`, `checksum`.
 
     :param path: Path of the `.npz` model file.
     :raises FileNotFoundError: If the file does not exist.
@@ -216,16 +216,16 @@ def load_model(path: str) -> EmeansModel:
         raise _invalid(path, "file", "not a regular file")
     centroids, metadata = _read_arrays(path)
     _check_format_version(path, metadata)
+    _check_metadata_types(path, metadata)
     _check_shape(path, centroids, metadata)
     if not np.isfinite(centroids).all():
         raise _invalid(path, "finite", "centroids contain NaN or infinite values")
-    if bool(metadata["spherical"]):
+    if metadata["spherical"]:
         norms = np.linalg.norm(centroids.astype(np.float64), axis=1)
         bad = int(np.count_nonzero(np.abs(norms - 1.0) > _UNIT_NORM_TOLERANCE))
         if bad:
             raise _invalid(path, "unit_norm", f"{bad} centroid rows of a spherical model do not have unit norm")
-    expected = metadata.get("centroids_sha256")
-    if hashlib.sha256(centroids.tobytes()).hexdigest() != expected:
+    if hashlib.sha256(centroids.tobytes()).hexdigest() != metadata["centroids_sha256"]:
         raise _invalid(path, "checksum", "centroids do not match centroids_sha256; the file is corrupt or modified")
     return EmeansModel(path=str(path), centroids=centroids, metadata=metadata)
 
@@ -275,6 +275,16 @@ def _check_format_version(path: str, metadata: dict[str, Any]) -> None:
         )
     if version < 1:
         raise _invalid(path, "format_version", f"unsupported format_version {version}")
+
+
+def _check_metadata_types(path: str, metadata: dict[str, Any]) -> None:
+    # A truthy string such as "false" must never select the spherical geometry, nor a falsy one the Euclidean.
+    spherical = metadata["spherical"]
+    if not isinstance(spherical, bool):
+        raise _invalid(path, "metadata", f"metadata spherical must be true or false, got {spherical!r}")
+    checksum = metadata["centroids_sha256"]
+    if not isinstance(checksum, str):
+        raise _invalid(path, "metadata", f"metadata centroids_sha256 must be a string, got {checksum!r}")
 
 
 def _check_shape(path: str, centroids: np.ndarray, metadata: dict[str, Any]) -> None:
