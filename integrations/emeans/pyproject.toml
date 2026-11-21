@@ -79,6 +79,17 @@ env-vars = { UV_TORCH_BACKEND = "cpu" }
 run = "python {args}"
 integration = 'pytest -m integration {args:tests}'
 
+# Local-only AMD ROCm env (RX 9060 XT): not used by CI, droppable on the upstream move.
+[tool.hatch.envs.gpu]
+template = "test"
+extra-dependencies = ["torch[device-{env:EMEANS_ROCM_GFX:gfx1200}]==2.14.0+rocm10.1.0"]
+env-vars = { UV_EXTRA_INDEX_URL = "https://stable.repo.amd.com/rocm/whl-next/", UV_INDEX_STRATEGY = "unsafe-best-match" }
+
+[tool.hatch.envs.gpu.scripts]
+gpu-tests = 'pytest -m gpu {args:tests}'
+unit = 'pytest -m "not integration" {args:tests}'
+run = "python {args}"
+
 [tool.mypy]
 install_types = true
 non_interactive = true
@@ -168,6 +179,7 @@ exclude_lines = ["no cov", "if __name__ == .__main__.:", "if TYPE_CHECKING:"]
 addopts = "--strict-markers"
 markers = [
   "integration: integration tests",
+  "gpu: needs a GPU; local only",
 ]
 log_cli = true
 asyncio_default_fixture_loop_scope = "function"
