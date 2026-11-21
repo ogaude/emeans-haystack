@@ -106,7 +106,16 @@ class ProbeResult:
 ProbeFn = Callable[[str, str, str], ProbeResult]  # (rung name, requested assignment backend, precision)
 
 _PROBE_CACHE: dict[tuple[str, str, str], ProbeResult] = {}  # (rung name, requested, precision) -> outcome
-_PROBE_LOCK = threading.Lock()
+_PROBE_LOCK = threading.Lock()  # guards the two dicts only; never held while a probe runs
+_PROBE_KEY_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}  # serialises probes of one key
+_TRANSIENT_MARKERS = ("out of memory", "busy")
+
+
+def _is_transient_failure(reason: str | None) -> bool:
+    """Return whether a probe failure looks transient (memory pressure, busy device), so it must not be memoised."""
+    text = (reason or "").lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
 
 _PROBE_ROWS = 1024
 _PROBE_DIM = 64
@@ -166,14 +175,25 @@ def probe(rung_name: str, requested: str, precision: str) -> ProbeResult:
     :param requested: The e-means `assignment_backend` to probe.
     :param precision: `"fp32"`, `"bf16"` or `"fp16"`.
     :raises torch.OutOfMemoryError: If the GPU is out of memory; this is never remembered.
+
+    Probes for the same key run once at a time; probes for different keys do not wait for each other. A failure
+    whose reason mentions running out of memory or a busy device is treated as transient and is not remembered.
     """
     key = (rung_name, requested, precision)
     with _PROBE_LOCK:
         cached = _PROBE_CACHE.get(key)
         if cached is not None:
             return cached
+        key_lock = _PROBE_KEY_LOCKS.setdefault(key, threading.Lock())
+    with key_lock:
+        with _PROBE_LOCK:
+            cached = _PROBE_CACHE.get(key)
+        if cached is not None:
+            return cached  # another thread probed this key while we waited
         result = _run_probe(requested, precision)
-        _PROBE_CACHE[key] = result
+        if result.ok or not _is_transient_failure(result.reason):
+            with _PROBE_LOCK:
+                _PROBE_CACHE[key] = result
     logger.debug(
         "GPU probe for rung {rung} at {precision}: ok={ok} ({reason})",
         rung=rung_name,

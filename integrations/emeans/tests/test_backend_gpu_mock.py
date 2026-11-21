@@ -4,6 +4,7 @@
 
 import logging
 import sys
+import threading
 import types
 from collections.abc import Callable
 from pathlib import Path
@@ -414,6 +415,52 @@ def test_probe_memo_keeps_rungs_with_the_same_name_apart(monkeypatch: pytest.Mon
     assert not _backend.probe("custom", "native", "fp32").ok
     assert _backend.probe("custom", "triton", "fp32").ok
     assert calls == [("triton", "fp32"), ("native", "fp32")]
+
+
+@pytest.mark.parametrize(
+    ("reason", "remembered"),
+    [
+        ("RuntimeError: HIP error: out of memory", False),
+        ("RuntimeError: CUDA error: device or resource busy", False),
+        ("OutOfResources: out of resource: shared memory", True),
+        ("CompilationError: bad kernel", True),
+    ],
+)
+def test_probe_does_not_remember_transient_failures(
+    monkeypatch: pytest.MonkeyPatch, reason: str, remembered: bool
+) -> None:
+    calls: list[str] = []
+
+    def fake(requested: str, precision: str) -> ProbeResult:  # noqa: ARG001
+        calls.append(requested)
+        return ProbeResult(False, None, reason)
+
+    monkeypatch.setattr(_backend, "_run_probe", fake)
+    for _ in range(2):
+        assert not _backend.probe("nvidia-triton", "triton", "fp32").ok
+    assert len(calls) == (1 if remembered else 2)
+
+
+def test_probe_of_one_key_does_not_block_another(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake(requested: str, precision: str) -> ProbeResult:  # noqa: ARG001
+        if requested == "triton":
+            started.set()
+            assert release.wait(5)
+        return ProbeResult(True, requested, None)
+
+    monkeypatch.setattr(_backend, "_run_probe", fake)
+    slow = threading.Thread(target=_backend.probe, args=("nvidia-triton", "triton", "fp32"))
+    slow.start()
+    try:
+        assert started.wait(5)
+        assert _backend.probe("native", "native", "fp32").ok  # would deadlock on a global probe lock
+    finally:
+        release.set()
+        slow.join(5)
+    assert _backend._PROBE_CACHE[("nvidia-triton", "triton", "fp32")].ok
 
 
 # probe out of memory (SA-01)
