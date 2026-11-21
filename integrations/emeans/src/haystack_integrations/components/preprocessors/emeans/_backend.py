@@ -8,6 +8,7 @@ import contextlib
 import importlib
 import importlib.util
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -339,6 +340,13 @@ def detect_environment() -> EnvInfo:
     )
 
 
+def _is_out_of_memory(error: BaseException) -> bool:
+    """Return whether `error` is a PyTorch out-of-memory error, without importing PyTorch (it may be absent)."""
+    torch_module = sys.modules.get("torch")
+    oom_type = getattr(torch_module, "OutOfMemoryError", None)
+    return isinstance(oom_type, type) and isinstance(error, oom_type)
+
+
 def select_backend(
     *,
     device: str,
@@ -354,6 +362,8 @@ def select_backend(
     A GPU rung is accepted when a tiny training probe (both spherical modes, fixed small `d` and `k`, without
     deterministic mode) succeeds on it, once per process. The probe does not cover every shape or mode, so a rung
     that passes it can still fail on the real data; such an error propagates and the next rung is not tried.
+    With `device="auto"`, a GPU out-of-memory error during a rung's probe counts as that rung failing (it is not
+    remembered, so later runs probe again); with `device="cuda"` it propagates. Errors from the real fit propagate.
 
     :param device: `"cpu"`, `"cuda"` or `"auto"`.
     :param n: Number of embeddings.
@@ -363,6 +373,7 @@ def select_backend(
     :param gpu_rungs: GPU backends to try in order; `None` means the default ladder.
     :raises RuntimeError: If `device="cuda"` and no GPU backend is usable.
     :raises ValueError: If `device` is not a known value.
+    :raises torch.OutOfMemoryError: If `device="cuda"` and a rung's probe runs out of GPU memory.
     """
     if device not in DEVICES:
         msg = f"device must be 'auto', 'cpu' or 'cuda', got {device!r}"
@@ -382,9 +393,20 @@ def select_backend(
     else:
         rungs = gpu_rungs if gpu_rungs is not None else default_rungs()
         reasons: list[str] = []
+        oom_rungs: list[str] = []
         for rung in rungs:
-            reason = rung.usable(environment)
+            try:
+                reason = rung.usable(environment)
+            except Exception as error:
+                if device != "auto" or not _is_out_of_memory(error):
+                    raise
+                reason = f"probe ran out of GPU memory ({type(error).__name__}: {error})"
+                oom_rungs.append(rung.name)
             if reason is None:
+                if oom_rungs:
+                    logger.warning(
+                        "GPU probe ran out of memory on {oom}; using {rung}", oom=", ".join(oom_rungs), rung=rung.name
+                    )
                 return BackendChoice(rung.name, environment.device_name or "cuda", None, requested=rung.requested)
             reasons.append(f"{rung.name}: {reason}")
         detail = "; ".join(reasons) or "no GPU backend registered"

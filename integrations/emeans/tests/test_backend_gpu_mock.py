@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import sys
+import types
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -329,6 +331,106 @@ def test_probe_propagates_exception_and_caches_nothing(monkeypatch: pytest.Monke
     with pytest.raises(MemoryError):
         _backend.probe("native", "native", "fp32")
     assert _backend._PROBE_CACHE == {}
+
+
+# probe out of memory (SA-01)
+
+
+class FakeOutOfMemoryError(RuntimeError):
+    pass
+
+
+class OomProbe(FakeProbe):
+    """FakeProbe that raises a fake out-of-memory error for the rungs in `oom`."""
+
+    def __init__(self, oom: set[str], results: dict[str, ProbeResult] | None = None) -> None:
+        super().__init__(results)
+        self.oom = oom
+
+    def __call__(self, rung_name: str, requested: str, precision: str) -> ProbeResult:
+        if rung_name in self.oom:
+            self.calls.append((rung_name, requested, precision))
+            msg = "CUDA out of memory"
+            raise FakeOutOfMemoryError(msg)
+        return super().__call__(rung_name, requested, precision)
+
+
+@pytest.fixture
+def fake_torch_oom(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(OutOfMemoryError=FakeOutOfMemoryError))
+
+
+@pytest.mark.usefixtures("fake_torch_oom")
+def test_auto_every_rung_oom_falls_back_to_cpu_with_one_warning(caplog: pytest.LogCaptureFixture) -> None:
+    probe = OomProbe({"nvidia-auto", "nvidia-triton", "native"})
+    with caplog.at_level(logging.DEBUG):
+        choice = choose(gpu_env(), probe)
+    assert choice.name == "cpu"
+    reason = choice.fallback_reason
+    assert reason is not None
+    assert reason.startswith("no GPU backend usable:")
+    assert reason.count("out of GPU memory") == 3
+    warnings = warnings_in(caplog)
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == reason
+
+
+@pytest.mark.usefixtures("fake_torch_oom")
+def test_auto_oom_on_one_rung_tries_the_next(caplog: pytest.LogCaptureFixture) -> None:
+    probe = OomProbe({"nvidia-auto"})
+    with caplog.at_level(logging.DEBUG):
+        choice = choose(gpu_env(), probe)
+    assert choice.name == "nvidia-triton"
+    assert choice.fallback_reason is None
+    warnings = warnings_in(caplog)
+    assert len(warnings) == 1
+    assert "nvidia-auto" in warnings[0].getMessage()
+    assert "out of memory" in warnings[0].getMessage()
+
+
+@pytest.mark.usefixtures("fake_torch_oom")
+def test_cuda_probe_oom_propagates_unwrapped() -> None:
+    probe = OomProbe({"nvidia-auto"})
+    with pytest.raises(FakeOutOfMemoryError):
+        choose(gpu_env(), probe, device="cuda")
+    assert [call[0] for call in probe.calls] == ["nvidia-auto"]
+
+
+@pytest.mark.usefixtures("fake_torch_oom")
+def test_auto_probe_oom_is_not_memoised(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(requested: str, precision: str) -> ProbeResult:  # noqa: ARG001
+        msg = "CUDA out of memory"
+        raise FakeOutOfMemoryError(msg)
+
+    monkeypatch.setattr(_backend, "_run_probe", boom)
+    _backend.clear_probe_cache()
+    choice = select_backend(device="auto", n=100, k=10, gpu_threshold=1, env=gpu_env(), gpu_rungs=default_rungs())
+    assert choice.name == "cpu"
+    assert _backend._PROBE_CACHE == {}
+
+
+class RaisingProbe(FakeProbe):
+    """FakeProbe that raises `error` for every rung."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    def __call__(self, rung_name: str, requested: str, precision: str) -> ProbeResult:
+        self.calls.append((rung_name, requested, precision))
+        raise self.error
+
+
+@pytest.mark.usefixtures("fake_torch_oom")
+def test_auto_non_oom_error_propagates() -> None:
+    with pytest.raises(ValueError, match="not memory"):
+        choose(gpu_env(), RaisingProbe(ValueError("not memory")))
+
+
+def test_auto_runtime_error_propagates_without_torch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    with pytest.raises(RuntimeError, match="plain failure"):
+        choose(gpu_env(), RaisingProbe(RuntimeError("plain failure")))
 
 
 def test_cpu_and_below_threshold_never_detect(monkeypatch: pytest.MonkeyPatch) -> None:
