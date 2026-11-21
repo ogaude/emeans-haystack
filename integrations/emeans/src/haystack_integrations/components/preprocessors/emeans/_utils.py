@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import math
+import numbers
 from collections.abc import Sequence
 
 import numpy as np
@@ -22,6 +24,60 @@ def check_positive_int(name: str, value: object, *, allow_none: bool = False) ->
         return
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         msg = f"{name} must be a positive integer{' or None' if allow_none else ''}, got {value!r}"
+        raise ValueError(msg)
+
+
+def check_bool(name: str, value: object) -> None:
+    """
+    Raise `ValueError` unless `value` is `True` or `False`.
+
+    Truthy strings such as `"no"` are rejected rather than silently read as `True`.
+
+    :param name: Parameter name used in the error message.
+    :param value: Value to check.
+    """
+    if not isinstance(value, bool):
+        msg = f"{name} must be True or False, got {value!r}"
+        raise ValueError(msg)
+
+
+def check_integer(name: str, value: object) -> None:
+    """
+    Raise `ValueError` unless `value` is an integer (booleans are rejected).
+
+    :param name: Parameter name used in the error message.
+    :param value: Value to check.
+    """
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Integral):
+        msg = f"{name} must be an integer, got {value!r}"
+        raise ValueError(msg)
+
+
+def check_threshold(name: str, value: object) -> None:
+    """
+    Raise `ValueError` unless `value` is a real number that is not NaN; infinity is allowed.
+
+    :param name: Parameter name used in the error message.
+    :param value: Value to check.
+    """
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Real) or math.isnan(value):
+        msg = f"{name} must be a number, got {value!r}"
+        raise ValueError(msg)
+
+
+def check_nepochs(value: object) -> None:
+    """
+    Raise `ValueError` unless `value` is a finite real number greater than 0.
+
+    :param value: Value to check.
+    """
+    if (
+        isinstance(value, (bool, np.bool_))
+        or not isinstance(value, numbers.Real)
+        or not math.isfinite(value)
+        or not float(value) > 0
+    ):
+        msg = f"nepochs must be a finite number greater than 0, got {value!r}"
         raise ValueError(msg)
 
 

@@ -12,7 +12,9 @@ from haystack import Document, component, default_from_dict, default_to_dict, lo
 from haystack_integrations.components.preprocessors.emeans._backend import cpu_assigner, select_backend
 from haystack_integrations.components.preprocessors.emeans._model import EmeansModel, ModelCache, load_model
 from haystack_integrations.components.preprocessors.emeans._utils import (
+    check_bool,
     check_positive_int,
+    check_threshold,
     extract_embeddings,
     normalize_rows,
 )
@@ -62,6 +64,9 @@ class EmeansDocumentClusterer:
         :param fit_params: Fitter parameters used when `fit_if_missing` is set, except `model_path`.
         """
         check_positive_int("batch_size", batch_size)
+        check_bool("return_distance", return_distance)
+        check_bool("fit_if_missing", fit_if_missing)
+        check_threshold("gpu_threshold", gpu_threshold)
         if device not in ("auto", "cpu", "cuda"):
             msg = f"device must be 'auto', 'cpu' or 'cuda', got {device!r}"
             raise ValueError(msg)

@@ -11,7 +11,11 @@ from haystack import Document, component, default_from_dict, default_to_dict, lo
 from haystack_integrations.components.preprocessors.emeans._backend import fit_model, select_backend
 from haystack_integrations.components.preprocessors.emeans._model import save_model
 from haystack_integrations.components.preprocessors.emeans._utils import (
+    check_bool,
+    check_integer,
+    check_nepochs,
     check_positive_int,
+    check_threshold,
     extract_embeddings,
     normalize_rows,
     resolve_k,
@@ -81,9 +85,12 @@ class EmeansFitter:
         check_positive_int("target_cluster_size", target_cluster_size, allow_none=True)
         check_positive_int("max_points_per_centroid", max_points_per_centroid, allow_none=True)
         self._check_exactly_one(k, target_cluster_size)
-        if isinstance(nepochs, bool) or not isinstance(nepochs, (int, float)) or not nepochs > 0:
-            msg = f"nepochs must be a number greater than 0, got {nepochs!r}"
-            raise ValueError(msg)
+        check_nepochs(nepochs)
+        check_bool("spherical", spherical)
+        check_bool("deterministic", deterministic)
+        check_bool("overwrite", overwrite)
+        check_integer("seed", seed)
+        check_threshold("gpu_threshold", gpu_threshold)
         if device not in _DEVICES:
             msg = f"device must be one of {_DEVICES}, got {device!r}"
             raise ValueError(msg)

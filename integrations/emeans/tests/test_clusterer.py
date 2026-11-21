@@ -243,6 +243,21 @@ class TestBatchAndDevice:
         with pytest.raises(ValueError, match="batch_size"):
             EmeansDocumentClusterer(model_path="m.npz", batch_size=bad)  # type: ignore[arg-type]
 
+    @pytest.mark.parametrize(
+        ("name", "bad"),
+        [
+            ("return_distance", "no"),
+            ("return_distance", 1),
+            ("fit_if_missing", "no"),
+            ("gpu_threshold", "big"),
+            ("gpu_threshold", float("nan")),
+            ("gpu_threshold", True),
+        ],
+    )
+    def test_bad_init_types(self, name: str, bad: object) -> None:
+        with pytest.raises(ValueError, match=name):
+            EmeansDocumentClusterer(model_path="m.npz", **{name: bad})  # type: ignore[arg-type]
+
     def test_cuda_without_gpu_backend(self, docs: list[Document], spherical_model: str) -> None:
         with pytest.raises(RuntimeError, match="no GPU backend usable"):
             EmeansDocumentClusterer(model_path=spherical_model, device="cuda").run(documents=docs)
@@ -350,6 +365,8 @@ class TestFitIfMissing:
             {"k": 2, "model_path": "x"},
             {"k": 2, "overwrite": True},
             {"k": 2, "unknown": 1},
+            {"k": 2, "spherical": "no"},
+            {"k": 2, "nepochs": float("inf")},
             {1: 2},
             ["k"],
             "k",
