@@ -113,38 +113,47 @@ _PROBE_K = 16
 
 
 def _run_probe(requested: str, precision: str) -> ProbeResult:
+    # Both spherical modes are probed: e-means takes mode-dependent code paths, and the verdict is reused for
+    # every later fit and assignment on this rung, whatever its mode.
     torch = importlib.import_module("torch")
     e_means = importlib.import_module("faiss.contrib.e_means")
     x = None
     em = None
+    centroids = None
     try:
-        generator = torch.Generator(device="cuda")
-        generator.manual_seed(0)
-        x = torch.randn(_PROBE_ROWS, _PROBE_DIM, device="cuda", generator=generator)
-        x = x / x.norm(dim=1, keepdim=True)
-        kwargs: dict[str, Any] = {
-            "nepochs": 1,
-            "seed": 0,
-            "spherical": True,
-            "capture_assignments": False,
-            "assignment_backend": requested,
-        }
-        if precision == "fp32":
-            em = e_means.QuantizedEmeans(_PROBE_DIM, _PROBE_K, quantizer=None, **kwargs)
-        else:
-            em = e_means.Emeans(_PROBE_DIM, _PROBE_K, **kwargs)
-            if precision == "fp16":
-                x = x.half()
-        centroids, _ = em.train(x)
-        if tuple(centroids.shape) != (_PROBE_K, _PROBE_DIM) or not bool(torch.isfinite(centroids).all()):
-            return ProbeResult(False, None, "the probe produced non-finite or misshapen centroids")
-        return ProbeResult(True, str(em.recipe["assignment_backend"]), None)
+        label = ""
+        for spherical in (True, False):
+            generator = torch.Generator(device="cuda")
+            generator.manual_seed(0)
+            x = torch.randn(_PROBE_ROWS, _PROBE_DIM, device="cuda", generator=generator)
+            if spherical:
+                x = x / x.norm(dim=1, keepdim=True)
+            kwargs: dict[str, Any] = {
+                "nepochs": 1,
+                "seed": 0,
+                "spherical": spherical,
+                "capture_assignments": False,
+                "assignment_backend": requested,
+            }
+            if precision == "fp32":
+                em = e_means.QuantizedEmeans(_PROBE_DIM, _PROBE_K, quantizer=None, **kwargs)
+            else:
+                em = e_means.Emeans(_PROBE_DIM, _PROBE_K, **kwargs)
+                if precision == "fp16":
+                    x = x.half()
+            centroids, _ = em.train(x)
+            if tuple(centroids.shape) != (_PROBE_K, _PROBE_DIM) or not bool(torch.isfinite(centroids).all()):
+                mode = "spherical" if spherical else "non-spherical"
+                return ProbeResult(False, None, f"the {mode} probe produced non-finite or misshapen centroids")
+            if spherical:
+                label = str(em.recipe["assignment_backend"])
+        return ProbeResult(True, label, None)
     except torch.OutOfMemoryError:
         raise
     except Exception as error:
         return ProbeResult(False, None, f"{type(error).__name__}: {error}")
     finally:
-        del x, em
+        del x, em, centroids
         torch.cuda.empty_cache()
 
 
@@ -335,6 +344,10 @@ def select_backend(
 ) -> BackendChoice:
     """
     Pick the backend for a run.
+
+    A GPU rung is accepted when a tiny training probe (both spherical modes, fixed small `d` and `k`, without
+    deterministic mode) succeeds on it, once per process. The probe does not cover every shape or mode, so a rung
+    that passes it can still fail on the real data; such an error propagates and the next rung is not tried.
 
     :param device: `"cpu"`, `"cuda"` or `"auto"`.
     :param n: Number of embeddings.
