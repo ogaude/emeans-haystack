@@ -19,6 +19,7 @@ from haystack_integrations.components.preprocessors.emeans._backend import (
     _backend_hint,
     default_rungs,
     mismatch_reason,
+    resolve_precision,
     select_backend,
 )
 
@@ -378,3 +379,66 @@ def test_fitter_info_line_carries_hint(
     assert len(infos) == 1
     assert infos[0].getMessage().endswith(HINT)
     assert "backend_hint" not in stats
+
+
+# resolve_precision
+
+NATIVE = BackendChoice("nvidia-triton", "Fake GPU", None, requested="triton")
+FAIL = ProbeResult(False, None, "RuntimeError: nope")
+
+
+def test_resolve_precision_fp32_skips_probe() -> None:
+    fake = FakeProbe()
+    assert resolve_precision(NATIVE, "fp32", fake) == ("fp32", None)
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    ("precision", "ok", "expected"),
+    [("auto", True, "bf16"), ("auto", False, "fp32"), ("bf16", True, "bf16"), ("fp16", True, "fp16")],
+)
+def test_resolve_precision_silent_rows(precision: str, ok: bool, expected: str) -> None:
+    fake = FakeProbe({} if ok else {"nvidia-triton": FAIL})
+    assert resolve_precision(NATIVE, precision, fake) == (expected, None)
+    wanted = "bf16" if precision == "auto" else precision
+    assert fake.calls == [("nvidia-triton", "triton", wanted)]
+
+
+@pytest.mark.parametrize("precision", ["bf16", "fp16"])
+def test_resolve_precision_explicit_failure_warns(precision: str) -> None:
+    used, warning = resolve_precision(NATIVE, precision, FakeProbe({"nvidia-triton": FAIL}))
+    assert used == "fp32"
+    assert warning is not None
+    assert precision in warning
+    assert "nvidia-triton" in warning
+
+
+def test_resolve_precision_rejects_cpu_choice() -> None:
+    with pytest.raises(ValueError, match="GPU backends only"):
+        resolve_precision(BackendChoice("cpu", "cpu", None), "bf16", FakeProbe())
+
+
+def test_resolve_precision_probe_memoised(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def counting(requested: str, precision: str) -> ProbeResult:
+        calls.append((requested, precision))
+        return OK
+
+    monkeypatch.setattr(_backend, "_run_probe", counting)
+    _backend.clear_probe_cache()
+    try:
+        assert resolve_precision(NATIVE, "bf16") == ("bf16", None)
+        assert resolve_precision(NATIVE, "auto") == ("bf16", None)
+    finally:
+        _backend.clear_probe_cache()
+    assert calls == [("triton", "bf16")]
+
+
+@pytest.mark.parametrize(("precision", "warns"), [("auto", False), ("bf16", True), ("fp16", True)])
+def test_resolve_precision_native_rung_is_fp32(precision: str, warns: bool) -> None:
+    fake = FakeProbe()
+    used, warning = resolve_precision(BackendChoice("native", "Fake GPU", None, requested="native"), precision, fake)
+    assert used == "fp32"
+    assert (warning is not None) is warns
+    assert fake.calls == []

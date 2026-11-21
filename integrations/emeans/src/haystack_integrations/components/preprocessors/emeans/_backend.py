@@ -479,6 +479,40 @@ def fit_model(
     return FitResult(centroids=np.ascontiguousarray(centroids, dtype=np.float32), info=info)
 
 
+def resolve_precision(choice: BackendChoice, precision: str, probe_fn: ProbeFn | None = None) -> tuple[str, str | None]:
+    """
+    Decide the precision a GPU fit trains in, using a memoised probe at that precision on the chosen rung.
+
+    :param choice: The chosen GPU backend; its `requested` assignment backend is what gets probed.
+    :param precision: `"auto"`, `"fp32"`, `"bf16"` or `"fp16"` as requested by the user.
+    :param probe_fn: Probe to run; defaults to the memoised `probe`.
+    :returns: The precision to train with (`"fp32"`, `"bf16"` or `"fp16"`) and a warning text, or None when
+        nothing needs reporting. `"auto"` falls back to FP32 silently; an explicit `"bf16"`/`"fp16"` that the rung
+        cannot run falls back to FP32 with a warning.
+    :raises ValueError: If `choice` is a CPU choice.
+    """
+    if choice.requested is None:
+        msg = "resolve_precision applies to GPU backends only"
+        raise ValueError(msg)
+    if precision == "fp32":
+        return "fp32", None
+    if choice.requested == "native":
+        # The native rung is the FP32 fallback by definition; explicit native assignment would accept BF16/FP16
+        # tensors, but its reduced-precision behaviour is not part of the contract.
+        return "fp32", None if precision == "auto" else _unsupported(precision, choice)
+    run_probe = probe_fn or probe
+    wanted = "bf16" if precision == "auto" else precision
+    if run_probe(choice.name, choice.requested, wanted).ok:
+        return wanted, None
+    if precision == "auto":
+        return "fp32", None
+    return "fp32", _unsupported(precision, choice)
+
+
+def _unsupported(precision: str, choice: BackendChoice) -> str:
+    return f"precision '{precision}' is not supported on the {choice.name} GPU backend; using fp32"
+
+
 def _n_train(n: int, k: int, max_points_per_centroid: int | None) -> int:
     return int(max_points_per_centroid * k if max_points_per_centroid and n > max_points_per_centroid * k else n)
 
@@ -497,17 +531,16 @@ def _fit_gpu(
 ) -> FitResult:
     torch = importlib.import_module("torch")
     e_means = importlib.import_module("faiss.contrib.e_means")
-    if precision in ("bf16", "fp16"):
-        logger.warning(
-            "precision '{precision}' is not supported on the {backend} GPU backend; using fp32",
-            precision=precision,
-            backend=backend.name,
-        )
+    train_precision, warning = resolve_precision(backend, precision)
+    if warning is not None:
+        logger.warning("{warning}", warning=warning)
     n, d = x.shape
     x_gpu = None
     em = None
     try:
-        em = e_means.QuantizedEmeans(
+        engine = e_means.QuantizedEmeans if train_precision == "fp32" else e_means.Emeans
+        extra: dict[str, Any] = {"quantizer": None} if train_precision == "fp32" else {}
+        em = engine(
             d,
             k,
             nepochs=nepochs,
@@ -515,10 +548,12 @@ def _fit_gpu(
             spherical=spherical,
             max_points_per_centroid=max_points_per_centroid,
             capture_assignments=False,
-            quantizer=None,
             assignment_backend=backend.requested,
+            **extra,
         )
         x_gpu = torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32)).to("cuda")
+        if train_precision == "fp16":
+            x_gpu = x_gpu.half()
         with _deterministic(torch, deterministic):
             start = time.perf_counter()
             centroids, _ = em.train(x_gpu)
