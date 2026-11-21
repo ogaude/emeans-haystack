@@ -379,7 +379,7 @@ class TestPrecisionAndDevice:
     ) -> None:
         with caplog.at_level(logging.DEBUG):
             stats = make_fitter(tmp_path, device="auto", gpu_threshold=1).run(documents=make_docs(40))["stats"]
-        assert stats["fallback_reason"] == "no GPU backend usable"
+        assert stats["fallback_reason"] == "no GPU backend usable: PyTorch is not installed"
         assert warnings_in(caplog) == []
 
     def test_cuda_raises(self, tmp_path: Path, make_docs: MakeDocs) -> None:

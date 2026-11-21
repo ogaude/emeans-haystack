@@ -59,7 +59,7 @@ def test_select_auto_below_threshold(caplog: pytest.LogCaptureFixture) -> None:
 def test_select_auto_at_threshold_falls_back_silently(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.DEBUG):
         choice = select_backend(device="auto", n=10, k=2, gpu_threshold=20)
-    assert choice.fallback_reason == "no GPU backend usable"
+    assert choice.fallback_reason == "no GPU backend usable: PyTorch is not installed"
     assert warnings_in(caplog) == []
 
 
@@ -73,31 +73,46 @@ def test_select_unknown_device() -> None:
         select_backend(device="tpu", n=10, k=2, gpu_threshold=1)
 
 
-def test_select_empty_gpu_rungs_same_as_default() -> None:
-    for device in ("cpu", "auto"):
-        assert select_backend(device=device, n=10, k=2, gpu_threshold=1, gpu_rungs=()) == select_backend(
-            device=device, n=10, k=2, gpu_threshold=1
-        )
+GPU_ENV = EnvInfo(
+    torch_importable=True,
+    gpu_available=True,
+    is_rocm=False,
+    fork_detected=False,
+    device_name="Fake GPU",
+    torch_version="0",
+    hip_version=None,
+)
+
+
+def test_select_empty_gpu_rungs_never_picks_gpu() -> None:
+    choice = select_backend(device="auto", n=10, k=2, gpu_threshold=1, env=GPU_ENV, gpu_rungs=())
+    assert choice.name == "cpu"
+    assert choice.fallback_reason is not None
+    assert choice.fallback_reason.endswith("no GPU backend registered")
     with pytest.raises(RuntimeError, match="no GPU backend usable"):
-        select_backend(device="cuda", n=10, k=2, gpu_threshold=1, gpu_rungs=())
+        select_backend(device="cuda", n=10, k=2, gpu_threshold=1, env=GPU_ENV, gpu_rungs=())
 
 
 def test_select_uses_usable_rung_and_reports_reasons() -> None:
     class Rung:
         def __init__(self, name: str, reason: str | None) -> None:
             self.name = name
+            self.requested = "native"
             self._reason = reason
 
         def usable(self, env: EnvInfo) -> str | None:  # noqa: ARG002
             return self._reason
 
-    env = detect_environment()
     ok = select_backend(
-        device="cuda", n=10, k=2, gpu_threshold=1, env=env, gpu_rungs=[Rung("a", "bad"), Rung("b", None)]
+        device="cuda", n=10, k=2, gpu_threshold=1, env=GPU_ENV, gpu_rungs=[Rung("a", "bad"), Rung("b", None)]
     )
-    assert ok == BackendChoice("b", "b", None)
+    assert ok == BackendChoice("b", "Fake GPU", None, requested="native")
     with pytest.raises(RuntimeError, match="a: bad"):
-        select_backend(device="cuda", n=10, k=2, gpu_threshold=1, env=env, gpu_rungs=[Rung("a", "bad")])
+        select_backend(device="cuda", n=10, k=2, gpu_threshold=1, env=GPU_ENV, gpu_rungs=[Rung("a", "bad")])
+    with pytest.raises(RuntimeError, match="a: bad; c: worse"):
+        select_backend(
+            device="cuda", n=10, k=2, gpu_threshold=1, env=GPU_ENV, gpu_rungs=[Rung("a", "bad"), Rung("c", "worse")]
+        )
 
 
 def test_emeans_source_wheel() -> None:
@@ -126,12 +141,23 @@ def test_emeans_source_find_spec_errors(monkeypatch: pytest.MonkeyPatch, error: 
     assert detect_emeans_source() == "faiss-cpu"
 
 
-def test_detect_environment_never_imports_torch() -> None:
-    had_torch = "torch" in sys.modules
+@pytest.mark.parametrize("outcome", [None, ImportError, ValueError])
+def test_detect_environment_without_torch(monkeypatch: pytest.MonkeyPatch, outcome: type[Exception] | None) -> None:
+    real = importlib.util.find_spec
+    imported_before = "torch" in sys.modules
+
+    def fake(name: str, *args: object) -> ModuleSpec | None:
+        if name == "torch":
+            if outcome is not None:
+                raise outcome
+            return None
+        return real(name, *args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake)
     env = detect_environment()
+    assert env.torch_importable is False
     assert env.gpu_available is False
-    if not had_torch:
-        assert "torch" not in sys.modules
+    assert ("torch" in sys.modules) == imported_before
 
 
 def test_fit_model_info_plain_types() -> None:

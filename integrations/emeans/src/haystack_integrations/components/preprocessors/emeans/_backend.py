@@ -2,11 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The only module that touches the e-means engine. It never imports PyTorch."""
+"""The only module that touches the e-means engine; PyTorch is imported only inside functions, when a GPU is used."""
 
+import importlib
 import importlib.util
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -35,6 +37,8 @@ class EnvInfo:
     device_name: str | None
     torch_version: str | None
     hip_version: str | None
+    cuda_version: str | None = None
+    arch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -44,12 +48,19 @@ class BackendChoice:
     name: str
     device_name: str
     fallback_reason: str | None
+    requested: str | None = None  # the e-means `assignment_backend` of the chosen GPU rung; None means CPU
 
 
 class GpuRung(Protocol):
-    """One GPU backend option that `select_backend` can consider; none are registered yet."""
+    """One GPU backend option that `select_backend` can consider."""
 
-    name: str
+    @property
+    def name(self) -> str:
+        """Short name of the rung, used in reports."""
+
+    @property
+    def requested(self) -> str:
+        """The e-means `assignment_backend` this rung asks for."""
 
     def usable(self, env: EnvInfo) -> str | None:
         """Return `None` when this backend can run in `env`, otherwise the reason it cannot."""
@@ -79,16 +90,172 @@ def detect_emeans_source() -> str:
     return "e-means-rocm" if fork else "faiss-cpu"
 
 
+@dataclass(frozen=True)
+class ProbeResult:
+    """Outcome of the tiny training run that checks a GPU rung works."""
+
+    ok: bool
+    assignment_backend: str | None
+    reason: str | None
+
+
+ProbeFn = Callable[[str, str, str], ProbeResult]  # (rung name, requested assignment backend, precision)
+
+_PROBE_CACHE: dict[tuple[str, str], ProbeResult] = {}
+_PROBE_LOCK = threading.Lock()
+
+_PROBE_ROWS = 1024
+_PROBE_DIM = 64
+_PROBE_K = 16
+
+
+def _run_probe(requested: str, precision: str) -> ProbeResult:
+    torch = importlib.import_module("torch")
+    e_means = importlib.import_module("faiss.contrib.e_means")
+    x = None
+    em = None
+    try:
+        generator = torch.Generator(device="cuda")
+        generator.manual_seed(0)
+        x = torch.randn(_PROBE_ROWS, _PROBE_DIM, device="cuda", generator=generator)
+        x = x / x.norm(dim=1, keepdim=True)
+        kwargs: dict[str, Any] = {
+            "nepochs": 1,
+            "seed": 0,
+            "spherical": True,
+            "capture_assignments": False,
+            "assignment_backend": requested,
+        }
+        if precision == "fp32":
+            em = e_means.QuantizedEmeans(_PROBE_DIM, _PROBE_K, quantizer=None, **kwargs)
+        else:
+            em = e_means.Emeans(_PROBE_DIM, _PROBE_K, **kwargs)
+            if precision == "fp16":
+                x = x.half()
+        centroids, _ = em.train(x)
+        if tuple(centroids.shape) != (_PROBE_K, _PROBE_DIM) or not bool(torch.isfinite(centroids).all()):
+            return ProbeResult(False, None, "the probe produced non-finite or misshapen centroids")
+        return ProbeResult(True, str(em.recipe["assignment_backend"]), None)
+    except torch.OutOfMemoryError:
+        raise
+    except Exception as error:
+        return ProbeResult(False, None, f"{type(error).__name__}: {error}")
+    finally:
+        del x, em
+        torch.cuda.empty_cache()
+
+
+def probe(rung_name: str, requested: str, precision: str) -> ProbeResult:
+    """
+    Run the tiny training probe for a rung once per process and precision, and remember the outcome.
+
+    :param rung_name: Name of the rung being probed.
+    :param requested: The e-means `assignment_backend` to probe.
+    :param precision: `"fp32"`, `"bf16"` or `"fp16"`.
+    :raises torch.OutOfMemoryError: If the GPU is out of memory; this is never remembered.
+    """
+    key = (rung_name, precision)
+    with _PROBE_LOCK:
+        cached = _PROBE_CACHE.get(key)
+        if cached is not None:
+            return cached
+        result = _run_probe(requested, precision)
+        _PROBE_CACHE[key] = result
+    logger.debug(
+        "GPU probe for rung {rung} at {precision}: ok={ok} ({reason})",
+        rung=rung_name,
+        precision=precision,
+        ok=result.ok,
+        reason=result.reason,
+    )
+    return result
+
+
+def clear_probe_cache() -> None:
+    """Forget every remembered probe outcome."""
+    with _PROBE_LOCK:
+        _PROBE_CACHE.clear()
+
+
+@dataclass(frozen=True)
+class _Attempt:
+    name: str
+    requested: str
+    gate: Callable[[EnvInfo], str | None]
+    probe_fn: ProbeFn
+
+    def usable(self, env: EnvInfo) -> str | None:
+        reason = self.gate(env)
+        if reason is not None:
+            return reason
+        result = self.probe_fn(self.name, self.requested, "fp32")
+        return None if result.ok else result.reason
+
+
+def _needs_fork(env: EnvInfo) -> str | None:
+    if env.is_rocm and env.fork_detected:
+        return None
+    return "needs the e-means-rocm fork on a ROCm build of PyTorch"
+
+
+def _needs_nvidia(env: EnvInfo) -> str | None:
+    return "needs an NVIDIA GPU" if env.is_rocm else None
+
+
+def _always(_env: EnvInfo) -> str | None:
+    return None
+
+
+def default_rungs(probe_fn: ProbeFn | None = None) -> tuple[GpuRung, ...]:
+    """
+    Return the GPU ladder in the order it is tried.
+
+    :param probe_fn: Probe to use; the memoised `probe` when omitted.
+    """
+    fn = probe_fn if probe_fn is not None else probe
+    return (
+        _Attempt("fork-triton", "auto", _needs_fork, fn),
+        _Attempt("nvidia-auto", "auto", _needs_nvidia, fn),
+        _Attempt("nvidia-triton", "triton", _needs_nvidia, fn),
+        _Attempt("native", "native", _always, fn),
+    )
+
+
 def detect_environment() -> EnvInfo:
-    """Inspect the environment without importing PyTorch."""
+    """Inspect the environment; PyTorch is imported only when it is installed."""
+    fork = detect_emeans_source() == "e-means-rocm"
+    try:
+        torch_findable = importlib.util.find_spec("torch") is not None
+    except (ImportError, ValueError):
+        torch_findable = False
+    unavailable = EnvInfo(False, False, False, fork, None, None, None)
+    if not torch_findable:
+        return unavailable
+    try:
+        torch = importlib.import_module("torch")
+    except ImportError:
+        return unavailable
+    hip_version = torch.version.hip
+    gpu_available = bool(torch.cuda.is_available())
+    device_name: str | None = None
+    arch: str | None = None
+    if gpu_available:
+        device_name = str(torch.cuda.get_device_name(0))
+        if hip_version is not None:
+            arch = getattr(torch.cuda.get_device_properties(0), "gcnArchName", None)
+        else:
+            major, minor = torch.cuda.get_device_capability(0)
+            arch = f"sm_{major}{minor}"
     return EnvInfo(
-        torch_importable=importlib.util.find_spec("torch") is not None,
-        gpu_available=False,
-        is_rocm=False,
-        fork_detected=detect_emeans_source() == "e-means-rocm",
-        device_name=None,
-        torch_version=None,
-        hip_version=None,
+        torch_importable=True,
+        gpu_available=gpu_available,
+        is_rocm=hip_version is not None,
+        fork_detected=fork,
+        device_name=device_name,
+        torch_version=str(torch.__version__),
+        hip_version=hip_version,
+        cuda_version=torch.version.cuda,
+        arch=arch,
     )
 
 
@@ -99,7 +266,7 @@ def select_backend(
     k: int,
     gpu_threshold: float,
     env: EnvInfo | None = None,
-    gpu_rungs: Sequence[GpuRung] = (),
+    gpu_rungs: Sequence[GpuRung] | None = None,
 ) -> BackendChoice:
     """
     Pick the backend for a run.
@@ -108,8 +275,8 @@ def select_backend(
     :param n: Number of embeddings.
     :param k: Number of clusters.
     :param gpu_threshold: With `device="auto"`, a GPU is considered only when `n * k` reaches this value.
-    :param env: Detected environment; detected here when omitted and GPU backends are registered.
-    :param gpu_rungs: GPU backends to try in order. None are registered yet, so the default runs on CPU.
+    :param env: Detected environment; detected here when omitted and a GPU is considered.
+    :param gpu_rungs: GPU backends to try in order; `None` means the default ladder.
     :raises RuntimeError: If `device="cuda"` and no GPU backend is usable.
     :raises ValueError: If `device` is not a known value.
     """
@@ -120,18 +287,24 @@ def select_backend(
         return BackendChoice("cpu", "cpu", None)
     if device == "auto" and n * k < gpu_threshold:
         return BackendChoice("cpu", "cpu", None)
-    reasons: list[str] = []
-    if gpu_rungs:
-        environment = env if env is not None else detect_environment()
-        for rung in gpu_rungs:
+    environment = env if env is not None else detect_environment()
+    if not environment.torch_importable:
+        detail = "PyTorch is not installed"
+    elif not environment.gpu_available:
+        detail = "no GPU visible to PyTorch"
+    else:
+        rungs = gpu_rungs if gpu_rungs is not None else default_rungs()
+        reasons: list[str] = []
+        for rung in rungs:
             reason = rung.usable(environment)
             if reason is None:
-                return BackendChoice(rung.name, rung.name, None)
+                return BackendChoice(rung.name, environment.device_name or "cuda", None, requested=rung.requested)
             reasons.append(f"{rung.name}: {reason}")
+        detail = "; ".join(reasons) or "no GPU backend registered"
     if device == "cuda":
-        msg = f"device='cuda' requested but no GPU backend usable: {'; '.join(reasons) or 'none available'}"
+        msg = f"device='cuda' requested but no GPU backend usable: {detail}"
         raise RuntimeError(msg)
-    return BackendChoice("cpu", "cpu", "no GPU backend usable")
+    return BackendChoice("cpu", "cpu", f"no GPU backend usable: {detail}")
 
 
 def fit_model(

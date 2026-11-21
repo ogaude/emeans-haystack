@@ -2,11 +2,34 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import numpy as np
 import pytest
 from haystack import Document
+
+from haystack_integrations.components.preprocessors.emeans import _backend
+from haystack_integrations.components.preprocessors.emeans._backend import EnvInfo
+
+NO_GPU = EnvInfo(
+    torch_importable=False,
+    gpu_available=False,
+    is_rocm=False,
+    fork_detected=False,
+    device_name=None,
+    torch_version=None,
+    hip_version=None,
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Start every test with an empty probe cache and, unless it is a gpu test, an environment without a GPU."""
+    _backend.clear_probe_cache()
+    if request.node.get_closest_marker("gpu") is None:
+        monkeypatch.setattr(_backend, "detect_environment", lambda: NO_GPU)
+    yield
+    _backend.clear_probe_cache()
 
 
 @pytest.fixture
