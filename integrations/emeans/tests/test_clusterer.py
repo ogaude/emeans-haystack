@@ -266,6 +266,13 @@ class TestBatchAndDevice:
         with pytest.raises(RuntimeError, match="no GPU backend usable"):
             EmeansDocumentClusterer(model_path=spherical_model, device="cuda").run(documents=docs)
 
+    def test_cuda_without_gpu_does_not_auto_fit(self, docs: list[Document], tmp_path: Path) -> None:
+        target = tmp_path / "never.npz"
+        comp = EmeansDocumentClusterer(model_path=str(target), device="cuda", fit_if_missing=True, fit_params={"k": 3})
+        with pytest.raises(RuntimeError, match="no GPU backend usable"):
+            comp.run(documents=docs)
+        assert not target.exists()
+
     def test_auto_with_low_threshold_runs_on_cpu(
         self, docs: list[Document], spherical_model: str, caplog: pytest.LogCaptureFixture
     ) -> None:

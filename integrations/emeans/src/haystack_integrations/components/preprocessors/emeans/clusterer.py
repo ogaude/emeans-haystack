@@ -176,6 +176,9 @@ class EmeansDocumentClusterer:
         if not positions:
             return {"documents": list(documents)}
 
+        if self.device == "cuda":
+            # Fail before _ensure_model, which may auto-fit and write a model file; k does not matter for "cuda".
+            select_backend(device=self.device, n=len(positions), k=1, gpu_threshold=self.gpu_threshold)
         model = self._ensure_model(path, documents)
         if x.shape[1] != model.d:
             msg = f"Embedding dimension mismatch: documents have dimension {x.shape[1]}, but the model has {model.d}"
