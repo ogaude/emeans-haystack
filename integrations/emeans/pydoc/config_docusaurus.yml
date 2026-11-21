@@ -1,0 +1,15 @@
+loaders:
+  - modules:
+      - haystack_integrations.components.preprocessors.emeans.fitter
+      - haystack_integrations.components.preprocessors.emeans.clusterer
+      - haystack_integrations.components.rankers.emeans.ranker
+    search_path: [../src]
+processors:
+  - type: filter
+    documented_only: true
+    skip_empty_modules: true
+renderer:
+  description: e-means clustering integration for Haystack
+  id: integrations-emeans
+  filename: emeans.md
+  title: e-means
