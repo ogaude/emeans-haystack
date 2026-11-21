@@ -124,6 +124,23 @@ def test_save_link_permission_error_falls_back(tmp_path: Path, monkeypatch: pyte
     assert [f.name for f in tmp_path.iterdir()] == ["m.npz"]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_save_applies_umask_without_changing_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    previous = os.umask(0o027)
+    try:
+
+        def no_umask(*_args: object) -> int:
+            msg = "save_model must not touch the process umask"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(os, "umask", no_umask)
+        p = good_file(tmp_path)
+    finally:
+        monkeypatch.undo()
+        os.umask(previous)
+    assert os.stat(p).st_mode & 0o777 == 0o640
+
+
 def test_save_failure_leaves_no_tmp(tmp_path: Path) -> None:
     meta = dict(CALLER_KEYS)
     meta["recipe"] = object()  # not JSON serialisable

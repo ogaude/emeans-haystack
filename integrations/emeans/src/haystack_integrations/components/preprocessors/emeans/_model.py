@@ -6,7 +6,7 @@ import contextlib
 import hashlib
 import json
 import os
-import tempfile
+import secrets
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -136,14 +136,11 @@ def save_model(path: str, centroids: np.ndarray, metadata: dict[str, Any], *, ov
     parent = os.path.dirname(os.path.abspath(path))
     tmp_path = ""
     try:
-        with tempfile.NamedTemporaryFile(dir=parent, suffix=".tmp", delete=False) as tmp:
-            tmp_path = tmp.name
+        fd, tmp_path = _create_temp(parent, os.path.basename(path))
+        with os.fdopen(fd, "wb") as tmp:
             np.savez(tmp, centroids=c, metadata=np.array(json.dumps(meta, sort_keys=True, default=_json_default)))
             tmp.flush()
             os.fsync(tmp.fileno())
-        umask = os.umask(0)
-        os.umask(umask)
-        os.chmod(tmp_path, 0o666 & ~umask)
         if overwrite:
             os.replace(tmp_path, path)
         else:
@@ -159,6 +156,23 @@ def _package_version() -> str:
         return version("emeans-haystack")
     except PackageNotFoundError:
         return "unknown"
+
+
+def _create_temp(parent: str, name: str) -> tuple[int, str]:
+    """
+    Create a new temporary file next to the target and return its descriptor and path.
+
+    The file is opened with mode `0o666` so that the kernel applies the process umask, as for any normal file.
+    Reading the umask with `os.umask` would change it for every thread of the process for a moment.
+    """
+    for _ in range(100):
+        tmp_path = os.path.join(parent, f".{name}.{secrets.token_hex(8)}.tmp")
+        try:
+            return os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666), tmp_path
+        except FileExistsError:
+            continue
+    msg = f"could not create a temporary file in {parent}"
+    raise FileExistsError(msg)
 
 
 def _create_exclusive(tmp_path: str, path: str) -> None:
