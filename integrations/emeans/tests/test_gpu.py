@@ -141,6 +141,53 @@ def test_explicit_bf16_on_native_degrades_once(
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
 
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+@pytest.mark.parametrize(
+    ("precision", "expected"),
+    [("auto", "bf16"), ("bf16", "bf16"), ("fp16", "fp16"), ("fp32", "fp32")],
+)
+def test_fork_reduced_precision(
+    tmp_path: Path, make_docs: MakeDocs, caplog: pytest.LogCaptureFixture, precision: str, expected: str
+) -> None:
+    if torch.version.hip is None or detect_emeans_source() != "e-means-rocm":
+        pytest.skip("needs the e-means-rocm fork on ROCm")
+    docs = make_docs(2000, d=64, n_clusters=16)
+    with caplog.at_level(logging.DEBUG):
+        stats = _fitter(tmp_path, precision=precision).run(documents=docs)["stats"]
+    assert stats["backend"] == "gpu-triton"
+    assert stats["precision_used"] == expected
+    assert stats["emeans_source"] == "e-means-rocm"
+    assert _warnings(caplog) == []
+
+
+@pytest.mark.parametrize("precision", ["bf16", "fp16"])
+def test_upstream_amd_reduced_precision_degrades(
+    tmp_path: Path, make_docs: MakeDocs, caplog: pytest.LogCaptureFixture, precision: str
+) -> None:
+    _require_rocm_upstream()
+    docs = make_docs(2000, d=64, n_clusters=16)
+    with caplog.at_level(logging.DEBUG):
+        stats = _fitter(tmp_path, precision=precision).run(documents=docs)["stats"]
+    assert stats["precision_used"] == "fp32"
+    assert stats["backend"] == "gpu-pytorch"
+    warnings = _warnings(caplog)
+    assert len(warnings) == 1
+    assert precision in warnings[0].getMessage()
+
+
+def test_upstream_amd_auto_is_silent_fp32(
+    tmp_path: Path, make_docs: MakeDocs, caplog: pytest.LogCaptureFixture
+) -> None:
+    _require_rocm_upstream()
+    with caplog.at_level(logging.DEBUG):
+        stats = _fitter(tmp_path, precision="auto").run(documents=make_docs(2000, d=64, n_clusters=16))["stats"]
+    assert stats["precision_used"] == "fp32"
+    assert _warnings(caplog) == []
+
+
 def test_detect_environment_real() -> None:
     env = detect_environment()
     assert env.gpu_available is True

@@ -115,7 +115,15 @@ def test_select_uses_usable_rung_and_reports_reasons() -> None:
         )
 
 
-def test_emeans_source_wheel() -> None:
+def test_emeans_source_wheel(monkeypatch: pytest.MonkeyPatch) -> None:
+    real = importlib.util.find_spec
+
+    def fake(name: str, *args: object) -> ModuleSpec | None:
+        if name == "faiss.contrib.e_means.device_profile":
+            return None
+        return real(name, *args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake)
     assert detect_emeans_source() == "faiss-cpu"
 
 
@@ -166,7 +174,7 @@ def test_fit_model_info_plain_types() -> None:
     assert info["device_name"] == "cpu"
     assert info["precision_used"] == "fp32"
     assert info["assignment_backend"] == "faiss"
-    assert info["emeans_source"] == "faiss-cpu"
+    assert info["emeans_source"] == detect_emeans_source()
     assert isinstance(info["recipe"], dict)
     assert isinstance(info["faiss_version"], str)
     for key, expected in {
