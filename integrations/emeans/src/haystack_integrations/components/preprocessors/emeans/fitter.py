@@ -5,6 +5,7 @@
 import os
 from typing import Any, Literal
 
+import numpy as np
 from haystack import Document, component, default_from_dict, default_to_dict, logging
 
 from haystack_integrations.components.preprocessors.emeans._backend import fit_model, select_backend
@@ -17,6 +18,11 @@ from haystack_integrations.components.preprocessors.emeans._utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DEVICES = ("auto", "cpu", "cuda")
+_PRECISIONS = ("auto", "fp32", "bf16", "fp16")
+_MIN_USABLE_DOCUMENTS = 2
+_EMPTY_CENTROID_NORM = 0.5
 
 
 @component
@@ -73,7 +79,17 @@ class EmeansFitter:
         """
         check_positive_int("k", k, allow_none=True)
         check_positive_int("target_cluster_size", target_cluster_size, allow_none=True)
+        check_positive_int("max_points_per_centroid", max_points_per_centroid, allow_none=True)
         self._check_exactly_one(k, target_cluster_size)
+        if isinstance(nepochs, bool) or not isinstance(nepochs, (int, float)) or not nepochs > 0:
+            msg = f"nepochs must be a number greater than 0, got {nepochs!r}"
+            raise ValueError(msg)
+        if device not in _DEVICES:
+            msg = f"device must be one of {_DEVICES}, got {device!r}"
+            raise ValueError(msg)
+        if precision not in _PRECISIONS:
+            msg = f"precision must be one of {_PRECISIONS}, got {precision!r}"
+            raise ValueError(msg)
         self.model_path = model_path
         self.k = k
         self.target_cluster_size = target_cluster_size
@@ -142,7 +158,9 @@ class EmeansFitter:
         :param model_path: Where to write the model; replaces the init value.
         :returns: A dictionary with `model_path` (the file written) and `stats` (a report of the fit).
         :raises FileExistsError: If the file exists and `overwrite` is `False`.
-        :raises ValueError: On invalid parameters or embeddings.
+        :raises FileNotFoundError: If the parent directory of the model path does not exist.
+        :raises RuntimeError: If `device="cuda"` and no GPU backend is usable.
+        :raises ValueError: On invalid parameters or embeddings, or if the fit produced an empty spherical centroid.
         """
         if k is not None or target_cluster_size is not None:
             check_positive_int("k", k, allow_none=True)
@@ -153,6 +171,10 @@ class EmeansFitter:
         self._check_exactly_one(use_k, use_tcs)
         path = model_path if model_path is not None else self.model_path
 
+        parent = os.path.dirname(os.path.abspath(path))
+        if not os.path.isdir(parent):
+            msg = f"parent directory of model_path does not exist: {parent}"
+            raise FileNotFoundError(msg)
         if os.path.exists(path) and not self.overwrite:
             msg = f"Model file already exists: {path}. Pass overwrite=True to replace it."
             raise FileExistsError(msg)
@@ -162,7 +184,7 @@ class EmeansFitter:
         n_skipped = len(documents) - n_usable
         if n_skipped:
             logger.warning("Skipped {n} documents without embedding", n=n_skipped)
-        if n_usable < 2:  # noqa: PLR2004
+        if n_usable < _MIN_USABLE_DOCUMENTS:
             msg = f"At least 2 documents with an embedding are required, got {n_usable}"
             raise ValueError(msg)
         if use_k is not None and use_k > n_usable:
@@ -181,13 +203,24 @@ class EmeansFitter:
             seed=self.seed,
             max_points_per_centroid=self.max_points_per_centroid,
             backend=backend,
+            precision=self.precision,
+            deterministic=self.deterministic,
         )
         info = fit.info
+        if self.spherical:
+            norms = np.linalg.norm(fit.centroids.astype(np.float64), axis=1)
+            n_empty = int(np.count_nonzero(norms < _EMPTY_CENTROID_NORM))
+            if n_empty:
+                msg = (
+                    f"The fit produced {n_empty} empty centroids out of {n_clusters}; "
+                    "use a smaller k or a larger nepochs"
+                )
+                raise ValueError(msg)
         metadata = {
             "spherical": self.spherical,
             "n_train": info["n_train"],
             "seed": self.seed,
-            "nepochs": self.nepochs,
+            "nepochs": float(self.nepochs),
             "backend": info["backend"],
             "assignment_backend": info["assignment_backend"],
             "precision_used": info["precision_used"],
@@ -211,6 +244,21 @@ class EmeansFitter:
             "fallback_reason": backend.fallback_reason,
             "emeans_source": info["emeans_source"],
             "faiss_version": info["faiss_version"],
+            "nepochs": info["nepochs"],
+            "batch_size": info["batch_size"],
+            "alpha0": info["alpha0"],
+            "n_splits": info["n_splits"],
+            "imbalance": info["imbalance"],
             "train_seconds": info["train_seconds"],
         }
+        logger.info(
+            "Fitted e-means on the {backend} backend (device {device_name}, precision {precision}): k={k} on {n} "
+            "documents in {seconds:.2f}s",
+            backend=info["backend"],
+            device_name=info["device_name"],
+            precision=info["precision_used"],
+            k=n_clusters,
+            n=n_usable,
+            seconds=info["train_seconds"],
+        )
         return {"model_path": path, "stats": stats}
