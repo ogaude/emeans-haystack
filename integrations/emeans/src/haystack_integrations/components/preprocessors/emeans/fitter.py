@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Literal
 
 from haystack import Document, component, default_from_dict, default_to_dict, logging
@@ -18,13 +17,6 @@ from haystack_integrations.components.preprocessors.emeans._utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _package_version() -> str:
-    try:
-        return version("emeans-haystack")
-    except PackageNotFoundError:
-        return "unknown"
 
 
 @component
@@ -201,7 +193,6 @@ class EmeansFitter:
             "precision_used": info["precision_used"],
             "emeans_source": info["emeans_source"],
             "faiss_version": info["faiss_version"],
-            "emeans_haystack_version": _package_version(),
             "recipe": info["recipe"],
         }
         save_model(path, fit.centroids, metadata, overwrite=self.overwrite)

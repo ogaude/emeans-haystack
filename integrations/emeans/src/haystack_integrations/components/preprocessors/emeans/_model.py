@@ -10,11 +10,34 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 import numpy as np
 
 FORMAT_VERSION = 1
+
+METADATA_KEYS: tuple[str, ...] = (
+    "format_version",
+    "k",
+    "d",
+    "spherical",
+    "centroids_sha256",
+    "created_at",
+    "n_train",
+    "seed",
+    "nepochs",
+    "backend",
+    "assignment_backend",
+    "precision_used",
+    "emeans_source",
+    "faiss_version",
+    "emeans_haystack_version",
+    "recipe",
+)
+_COMPUTED_KEYS = ("format_version", "k", "d", "centroids_sha256", "created_at", "emeans_haystack_version")
+_REQUIRED_KEYS = ("format_version", "k", "d", "spherical")
+_UNIT_NORM_TOLERANCE = 1e-3
 
 
 @dataclass(frozen=True)
@@ -49,9 +72,18 @@ def save_model(path: str, centroids: np.ndarray, metadata: dict[str, Any], *, ov
 
     :param path: Target `.npz` path.
     :param centroids: Centroids of shape `(k, d)`; stored as float32.
-    :param metadata: Extra metadata; format version, `k`, `d`, checksum and creation time are added here.
+    :param metadata: The caller-supplied metadata keys; format version, `k`, `d`, checksum, creation time and package
+        version are added here.
     :param overwrite: If `False`, an existing file at `path` raises `FileExistsError`.
+    :raises ValueError: If `metadata` does not have exactly the expected keys.
     """
+    expected_keys = set(METADATA_KEYS) - set(_COMPUTED_KEYS)
+    if set(metadata) != expected_keys:
+        msg = (
+            f"metadata keys must be exactly {sorted(expected_keys)}; "
+            f"missing {sorted(expected_keys - set(metadata))}, unexpected {sorted(set(metadata) - expected_keys)}"
+        )
+        raise ValueError(msg)
     c = np.ascontiguousarray(centroids, dtype=np.float32)
     meta: dict[str, Any] = {
         **metadata,
@@ -60,6 +92,7 @@ def save_model(path: str, centroids: np.ndarray, metadata: dict[str, Any], *, ov
         "d": int(c.shape[1]),
         "centroids_sha256": hashlib.sha256(c.tobytes()).hexdigest(),
         "created_at": datetime.now(UTC).isoformat(),
+        "emeans_haystack_version": _package_version(),
     }
     parent = os.path.dirname(os.path.abspath(path))
     tmp_path = ""
@@ -80,6 +113,13 @@ def save_model(path: str, centroids: np.ndarray, metadata: dict[str, Any], *, ov
         if tmp_path:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(tmp_path)
+
+
+def _package_version() -> str:
+    try:
+        return version("emeans-haystack")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 def _create_exclusive(tmp_path: str, path: str) -> None:
@@ -107,28 +147,89 @@ def _json_default(value: object) -> Any:
 
 def load_model(path: str) -> EmeansModel:
     """
-    Read a model file written by `save_model`.
+    Read a model file written by `save_model` and validate it.
 
-    Loading never unpickles anything, so a model file cannot run code.
+    Loading never unpickles anything, so a model file cannot run code. The checks run in this order: `file`,
+    `arrays`, `format_version`, `shape`, `finite`, `unit_norm`, `checksum`.
 
     :param path: Path of the `.npz` model file.
     :raises FileNotFoundError: If the file does not exist.
-    :raises ValueError: If the file cannot be read as a model.
+    :raises ValueError: If the file is not a valid, supported model; the message names the file and the failed check.
     """
     if not os.path.exists(path):
         msg = f"Model file not found: {path}"
         raise FileNotFoundError(msg)
+    if not os.path.isfile(path):
+        raise _invalid(path, "file", "not a regular file")
+    centroids, metadata = _read_arrays(path)
+    _check_format_version(path, metadata)
+    _check_shape(path, centroids, metadata)
+    if not np.isfinite(centroids).all():
+        raise _invalid(path, "finite", "centroids contain NaN or infinite values")
+    if bool(metadata["spherical"]):
+        norms = np.linalg.norm(centroids.astype(np.float64), axis=1)
+        bad = int(np.count_nonzero(np.abs(norms - 1.0) > _UNIT_NORM_TOLERANCE))
+        if bad:
+            raise _invalid(path, "unit_norm", f"{bad} centroid rows of a spherical model do not have unit norm")
+    expected = metadata.get("centroids_sha256")
+    if hashlib.sha256(centroids.tobytes()).hexdigest() != expected:
+        raise _invalid(path, "checksum", "centroids do not match centroids_sha256; the file is corrupt or modified")
+    return EmeansModel(path=str(path), centroids=centroids, metadata=metadata)
+
+
+def _invalid(path: str, check: str, detail: str) -> ValueError:
+    return ValueError(f"{path}: {check} check failed: {detail}")
+
+
+def _read_arrays(path: str) -> tuple[np.ndarray, dict[str, Any]]:
     try:
-        with np.load(path, allow_pickle=False) as z:
-            if not isinstance(z, np.lib.npyio.NpzFile):
-                msg = "not an .npz archive"
-                raise ValueError(msg)
-            centroids = np.array(z["centroids"])
-            metadata = json.loads(str(z["metadata"]))
+        loaded = np.load(path, allow_pickle=False)
     except (ValueError, EOFError, zipfile.BadZipFile, KeyError, OSError) as e:
-        msg = f"{path}: cannot read model file ({e})"
-        raise ValueError(msg) from e
+        raise _invalid(path, "arrays", f"cannot read as an .npz archive ({e})") from e
+    if not isinstance(loaded, np.lib.npyio.NpzFile):
+        raise _invalid(path, "arrays", "not an .npz archive")
+    with loaded as z:
+        if set(z.files) != {"centroids", "metadata"}:
+            raise _invalid(path, "arrays", f"expected arrays centroids and metadata, found {sorted(z.files)}")
+        try:
+            centroids = np.array(z["centroids"])
+            raw = z["metadata"]
+        except (ValueError, EOFError, zipfile.BadZipFile, KeyError, OSError) as e:
+            raise _invalid(path, "arrays", f"cannot read arrays ({e})") from e
+    if raw.ndim != 0 or raw.dtype.kind != "U":
+        raise _invalid(path, "arrays", "metadata is not a 0-d string array")
+    try:
+        metadata = json.loads(str(raw))
+    except ValueError as e:
+        raise _invalid(path, "arrays", f"metadata is not valid JSON ({e})") from e
     if not isinstance(metadata, dict):
-        msg = f"{path}: metadata is not a JSON object"
-        raise ValueError(msg)
-    return EmeansModel(path=path, centroids=centroids, metadata=metadata)
+        raise _invalid(path, "arrays", "metadata is not a JSON object")
+    missing = [key for key in _REQUIRED_KEYS if key not in metadata]
+    if missing:
+        raise _invalid(path, "arrays", f"metadata lacks keys {missing}")
+    return centroids, metadata
+
+
+def _check_format_version(path: str, metadata: dict[str, Any]) -> None:
+    version = metadata["format_version"]
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise _invalid(path, "format_version", f"format_version must be an integer, got {version!r}")
+    if version > FORMAT_VERSION:
+        raise _invalid(
+            path,
+            "format_version",
+            f"model format_version {version} is newer than supported version {FORMAT_VERSION}; upgrade emeans-haystack",
+        )
+    if version < 1:
+        raise _invalid(path, "format_version", f"unsupported format_version {version}")
+
+
+def _check_shape(path: str, centroids: np.ndarray, metadata: dict[str, Any]) -> None:
+    k, d = metadata["k"], metadata["d"]
+    for name, value in (("k", k), ("d", d)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise _invalid(path, "shape", f"metadata {name} must be a positive integer, got {value!r}")
+    if centroids.dtype != np.float32:
+        raise _invalid(path, "shape", f"centroids must be float32, got {centroids.dtype}")
+    if centroids.ndim != 2 or centroids.shape != (k, d):  # noqa: PLR2004
+        raise _invalid(path, "shape", f"centroids have shape {centroids.shape}, metadata says ({k}, {d})")
