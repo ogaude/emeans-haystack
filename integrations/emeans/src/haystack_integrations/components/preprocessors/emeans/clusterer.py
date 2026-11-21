@@ -78,7 +78,10 @@ class EmeansDocumentClusterer:
 
     @staticmethod
     def _validate_fit_params(fit_params: dict[str, Any] | None) -> None:
-        params = fit_params or {}
+        if not isinstance(fit_params, dict) or not fit_params:
+            msg = f"fit_params must be a non-empty dict when fit_if_missing=True, got {fit_params!r}"
+            raise ValueError(msg)
+        params = fit_params
         forbidden = sorted({"model_path", "overwrite"} & params.keys())
         if forbidden:
             msg = f"fit_params must not contain {forbidden}: the model path is the clusterer's and it never overwrites"

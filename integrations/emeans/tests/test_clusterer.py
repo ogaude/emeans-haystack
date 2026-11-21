@@ -349,9 +349,13 @@ class TestFitIfMissing:
             {"k": 2, "target_cluster_size": 5},
             {"k": 2, "model_path": "x"},
             {"k": 2, "overwrite": True},
+            {"k": 2, "unknown": 1},
+            {1: 2},
+            ["k"],
+            "k",
         ],
     )
-    def test_invalid_fit_params(self, fit_params: dict | None) -> None:
+    def test_invalid_fit_params(self, fit_params: object) -> None:
         with pytest.raises(ValueError):
             EmeansDocumentClusterer(model_path="m.npz", fit_if_missing=True, fit_params=fit_params)
 
