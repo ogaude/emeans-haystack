@@ -17,6 +17,7 @@ from haystack_integrations.components.preprocessors.emeans._model import (
     FORMAT_VERSION,
     METADATA_KEYS,
     load_model,
+    model_checksum,
     save_model,
 )
 
@@ -48,13 +49,21 @@ def write_raw(path: Path, centroids: Any, meta_overrides: dict[str, Any] | None 
         "format_version": FORMAT_VERSION,
         "k": int(c.shape[0]) if c.ndim == 2 else 1,
         "d": int(c.shape[1]) if c.ndim == 2 else 1,
-        "centroids_sha256": hashlib.sha256(c.tobytes()).hexdigest(),
         "created_at": datetime.now(UTC).isoformat(),
         "emeans_haystack_version": "x",
     }
     meta.update(meta_overrides or {})
+    if "centroids_sha256" not in meta:
+        meta["centroids_sha256"] = expected_checksum(c, bool(meta["spherical"]))
     np.savez(path, centroids=c, metadata=np.array(json.dumps(meta)), **extra)
     return str(path)
+
+
+def expected_checksum(c: np.ndarray, spherical: bool) -> str:
+    """The format-v1 checksum, written out by hand so that a change to its definition breaks these tests."""
+    k, d = (c.shape[0], c.shape[1]) if c.ndim == 2 else (1, 1)
+    header = f"spherical={1 if spherical else 0};k={k};d={d};".encode("ascii")
+    return hashlib.sha256(header + c.tobytes()).hexdigest()
 
 
 def good_file(tmp_path: Path, name: str = "m.npz") -> str:
@@ -77,7 +86,8 @@ def test_round_trip(tmp_path: Path) -> None:
     assert set(model.metadata) == set(METADATA_KEYS)
     assert len(METADATA_KEYS) == 16
     assert model.metadata["format_version"] == 1
-    assert model.metadata["centroids_sha256"] == hashlib.sha256(c.tobytes()).hexdigest()
+    assert model.metadata["centroids_sha256"] == expected_checksum(c, spherical=True)
+    assert model.metadata["centroids_sha256"] == model_checksum(c, spherical=True)
     created = datetime.fromisoformat(model.metadata["created_at"])
     assert created.utcoffset() is not None
     assert created.utcoffset().total_seconds() == 0
@@ -298,8 +308,40 @@ def test_load_checksum_mismatch(tmp_path: Path) -> None:
 def test_load_tampered_centroids(tmp_path: Path) -> None:
     c = unit_centroids()
     other = unit_centroids()[::-1].copy()
-    p = write_raw(tmp_path / "tp.npz", other, {"centroids_sha256": hashlib.sha256(c.tobytes()).hexdigest()})
+    p = write_raw(tmp_path / "tp.npz", other, {"centroids_sha256": expected_checksum(c, spherical=True)})
     check_fails(p, "checksum")
+
+
+def test_checksum_ignores_unrelated_metadata(tmp_path: Path) -> None:
+    p = write_raw(tmp_path / "um.npz", unit_centroids(), {"seed": 99, "backend": "edited"})
+    assert load_model(p).k == 3
+
+
+def test_load_flipped_spherical_flag_fails_checksum(tmp_path: Path) -> None:
+    # Unit-norm centroids pass the Euclidean load checks too; only the checksum catches the flipped mode.
+    c = unit_centroids()
+    p = write_raw(tmp_path / "flip.npz", c, {"spherical": False, "centroids_sha256": expected_checksum(c, True)})
+    check_fails(p, "checksum")
+
+
+def test_load_old_centroid_only_checksum_refused(tmp_path: Path) -> None:
+    c = unit_centroids()
+    p = write_raw(tmp_path / "old.npz", c, {"centroids_sha256": hashlib.sha256(c.tobytes()).hexdigest()})
+    check_fails(p, "checksum")
+
+
+def test_checksum_covers_mode_and_shape() -> None:
+    c = unit_centroids(4, 6)
+    base = model_checksum(c, spherical=True)
+    assert model_checksum(c, spherical=False) != base
+    assert model_checksum(c.reshape(6, 4), spherical=True) != base
+    assert model_checksum(np.asfortranarray(c), spherical=True) == base
+
+
+def test_save_rejects_non_bool_spherical(tmp_path: Path) -> None:
+    meta = {**CALLER_KEYS, "spherical": 1}
+    with pytest.raises(ValueError, match="spherical"):
+        save_model(str(tmp_path / "m.npz"), unit_centroids(), meta, overwrite=False)
 
 
 def test_check_order_version_before_finite(tmp_path: Path) -> None:

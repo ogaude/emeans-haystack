@@ -103,6 +103,24 @@ class ModelCache:
         return self._model
 
 
+def model_checksum(centroids: np.ndarray, *, spherical: bool) -> str:
+    """
+    Return the checksum stored as `centroids_sha256`.
+
+    Definition (model format version 1): the lowercase hex SHA-256 of the ASCII header
+    `spherical=<1|0>;k=<k>;d=<d>;` immediately followed by the centroid values as float32 in C (row-major)
+    order. The header binds the clustering mode and the shape to the centroid bytes, so editing `spherical`,
+    `k` or `d` in the metadata is detected like editing a centroid value.
+
+    :param centroids: float32 centroids of shape `(k, d)`.
+    :param spherical: Whether the model clusters by cosine similarity.
+    """
+    k, d = centroids.shape
+    header = f"spherical={int(spherical)};k={int(k)};d={int(d)};".encode("ascii")
+    body = np.ascontiguousarray(centroids, dtype=np.float32).tobytes(order="C")
+    return hashlib.sha256(header + body).hexdigest()
+
+
 def save_model(path: str, centroids: np.ndarray, metadata: dict[str, Any], *, overwrite: bool) -> None:
     """
     Write a model file atomically.
@@ -114,7 +132,7 @@ def save_model(path: str, centroids: np.ndarray, metadata: dict[str, Any], *, ov
     :param metadata: The caller-supplied metadata keys; format version, `k`, `d`, checksum, creation time and package
         version are added here.
     :param overwrite: If `False`, an existing file at `path` raises `FileExistsError`.
-    :raises ValueError: If `metadata` does not have exactly the expected keys.
+    :raises ValueError: If `metadata` does not have exactly the expected keys, or `spherical` is not a bool.
     """
     expected_keys = set(METADATA_KEYS) - set(_COMPUTED_KEYS)
     if set(metadata) != expected_keys:
@@ -123,13 +141,16 @@ def save_model(path: str, centroids: np.ndarray, metadata: dict[str, Any], *, ov
             f"missing {sorted(expected_keys - set(metadata))}, unexpected {sorted(set(metadata) - expected_keys)}"
         )
         raise ValueError(msg)
+    if not isinstance(metadata["spherical"], bool):
+        msg = f"metadata spherical must be True or False, got {metadata['spherical']!r}"
+        raise ValueError(msg)
     c = np.ascontiguousarray(centroids, dtype=np.float32)
     meta: dict[str, Any] = {
         **metadata,
         "format_version": FORMAT_VERSION,
         "k": int(c.shape[0]),
         "d": int(c.shape[1]),
-        "centroids_sha256": hashlib.sha256(c.tobytes()).hexdigest(),
+        "centroids_sha256": model_checksum(c, spherical=metadata["spherical"]),
         "created_at": datetime.now(UTC).isoformat(),
         "emeans_haystack_version": _package_version(),
     }
@@ -225,8 +246,9 @@ def load_model(path: str) -> EmeansModel:
         bad = int(np.count_nonzero(np.abs(norms - 1.0) > _UNIT_NORM_TOLERANCE))
         if bad:
             raise _invalid(path, "unit_norm", f"{bad} centroid rows of a spherical model do not have unit norm")
-    if hashlib.sha256(centroids.tobytes()).hexdigest() != metadata["centroids_sha256"]:
-        raise _invalid(path, "checksum", "centroids do not match centroids_sha256; the file is corrupt or modified")
+    if model_checksum(centroids, spherical=metadata["spherical"]) != metadata["centroids_sha256"]:
+        detail = "centroids, spherical, k or d do not match centroids_sha256; the file is corrupt or modified"
+        raise _invalid(path, "checksum", detail)
     return EmeansModel(path=str(path), centroids=centroids, metadata=metadata)
 
 
