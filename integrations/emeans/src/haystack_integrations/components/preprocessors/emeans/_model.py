@@ -170,6 +170,23 @@ def save_model(path: str, centroids: np.ndarray, metadata: dict[str, Any], *, ov
         if tmp_path:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(tmp_path)
+    _fsync_directory(parent)
+
+
+def _fsync_directory(directory: str) -> None:
+    """Make the new directory entry durable, so a power loss after return cannot lose the model (POSIX only)."""
+    if os.name != "posix":
+        return
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass  # some filesystems do not support fsync on a directory; the rename is still atomic
+    finally:
+        os.close(fd)
 
 
 def _package_version() -> str:

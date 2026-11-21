@@ -151,6 +151,29 @@ def test_save_applies_umask_without_changing_it(tmp_path: Path, monkeypatch: pyt
     assert os.stat(p).st_mode & 0o777 == 0o640
 
 
+@pytest.mark.skipif(os.name != "posix", reason="directory fsync is POSIX only")
+def test_save_fsyncs_parent_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    synced: list[int] = []
+    real_fsync = os.fsync
+    dir_fds: set[int] = set()
+    real_open = os.open
+
+    def spy_open(path: str, flags: int, *args: object) -> int:
+        fd = real_open(path, flags, *args)  # type: ignore[arg-type]
+        if os.path.isdir(path):
+            dir_fds.add(fd)
+        return fd
+
+    def spy_fsync(fd: int) -> None:
+        synced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", spy_open)
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    good_file(tmp_path)
+    assert any(fd in dir_fds for fd in synced)
+
+
 def test_save_failure_leaves_no_tmp(tmp_path: Path) -> None:
     meta = dict(CALLER_KEYS)
     meta["recipe"] = object()  # not JSON serialisable
