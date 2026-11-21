@@ -9,7 +9,7 @@ import numpy as np
 from haystack import Document, component, default_from_dict, default_to_dict, logging
 
 from haystack_integrations.components.preprocessors.emeans._backend import fit_model, select_backend
-from haystack_integrations.components.preprocessors.emeans._model import save_model
+from haystack_integrations.components.preprocessors.emeans._model import UNIT_NORM_TOLERANCE, save_model
 from haystack_integrations.components.preprocessors.emeans._utils import (
     check_bool,
     check_integer,
@@ -222,6 +222,11 @@ class EmeansFitter:
                     f"The fit produced {n_empty} empty centroids out of {n_clusters}; "
                     "use a smaller k or a larger nepochs"
                 )
+                raise ValueError(msg)
+            # Same tolerance as load_model, so the fitter never writes a model its own loader refuses.
+            n_off = int(np.count_nonzero(np.abs(norms - 1.0) > UNIT_NORM_TOLERANCE))
+            if n_off:
+                msg = f"The fit produced {n_off} spherical centroids out of {n_clusters} that do not have unit norm"
                 raise ValueError(msg)
         metadata = {
             "spherical": self.spherical,

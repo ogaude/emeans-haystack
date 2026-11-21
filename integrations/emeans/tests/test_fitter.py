@@ -308,6 +308,22 @@ class TestFiles:
             make_fitter(tmp_path).run(documents=make_docs(40))
         assert list(tmp_path.iterdir()) == []
 
+    def test_non_unit_spherical_centroid_writes_nothing(
+        self, tmp_path: Path, make_docs: MakeDocs, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = fitter.fit_model
+
+        def fake(*args: Any, **kwargs: Any) -> FitResult:
+            result = real(*args, **kwargs)
+            centroids = result.centroids.copy()
+            centroids[1] *= 0.9  # not empty, but outside the loader's unit-norm tolerance
+            return FitResult(centroids=centroids, info=result.info)
+
+        monkeypatch.setattr(fitter, "fit_model", fake)
+        with pytest.raises(ValueError, match=r"1 spherical centroids .* unit norm"):
+            make_fitter(tmp_path).run(documents=make_docs(40))
+        assert list(tmp_path.iterdir()) == []
+
 
 class TestSpherical:
     def test_unit_centroids_and_inputs_untouched(self, tmp_path: Path, make_docs: MakeDocs) -> None:

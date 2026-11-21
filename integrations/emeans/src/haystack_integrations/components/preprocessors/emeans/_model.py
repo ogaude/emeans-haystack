@@ -38,7 +38,7 @@ METADATA_KEYS: tuple[str, ...] = (
 )
 _COMPUTED_KEYS = ("format_version", "k", "d", "centroids_sha256", "created_at", "emeans_haystack_version")
 _REQUIRED_KEYS = ("format_version", "k", "d", "spherical", "centroids_sha256")
-_UNIT_NORM_TOLERANCE = 1e-3
+UNIT_NORM_TOLERANCE = 1e-3
 
 
 @dataclass(frozen=True)
@@ -243,7 +243,7 @@ def load_model(path: str) -> EmeansModel:
         raise _invalid(path, "finite", "centroids contain NaN or infinite values")
     if metadata["spherical"]:
         norms = np.linalg.norm(centroids.astype(np.float64), axis=1)
-        bad = int(np.count_nonzero(np.abs(norms - 1.0) > _UNIT_NORM_TOLERANCE))
+        bad = int(np.count_nonzero(np.abs(norms - 1.0) > UNIT_NORM_TOLERANCE))
         if bad:
             raise _invalid(path, "unit_norm", f"{bad} centroid rows of a spherical model do not have unit norm")
     if model_checksum(centroids, spherical=metadata["spherical"]) != metadata["centroids_sha256"]:
