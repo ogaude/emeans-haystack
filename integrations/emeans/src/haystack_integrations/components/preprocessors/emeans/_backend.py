@@ -575,9 +575,7 @@ def fit_model(
         "precision_used": "fp32",
         "assignment_backend": str(recipe.get("assignment_backend", recipe["backend"])),
         "recipe": recipe,
-        "n_train": int(
-            max_points_per_centroid * k if max_points_per_centroid and n > max_points_per_centroid * k else n
-        ),
+        "n_train": _n_train(n, k, max_points_per_centroid),
         "train_seconds": float(train_seconds),
         "emeans_source": detect_emeans_source(),
         "faiss_version": str(faiss.__version__),
