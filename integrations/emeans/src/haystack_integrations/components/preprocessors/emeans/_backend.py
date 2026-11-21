@@ -4,11 +4,13 @@
 
 """The only module that touches the e-means engine; PyTorch is imported only inside functions, when a GPU is used."""
 
+import contextlib
 import importlib
 import importlib.util
+import os
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -307,6 +309,27 @@ def select_backend(
     return BackendChoice("cpu", "cpu", f"no GPU backend usable: {detail}")
 
 
+_BACKEND_NAMES = {"native": "gpu-pytorch", "triton": "gpu-triton", "cute": "gpu-cute"}
+_PRECISION_NAMES = {"float32": "fp32", "bfloat16": "bf16", "float16": "fp16"}
+
+
+@contextlib.contextmanager
+def _deterministic(torch: Any, enabled: bool) -> Iterator[None]:
+    """Run the body with PyTorch's deterministic algorithms on, then restore the previous setting."""
+    if not enabled:
+        yield
+        return
+    previous = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    if torch.version.hip is None:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    torch.use_deterministic_algorithms(True)
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(previous, warn_only=warn_only)
+
+
 def fit_model(
     x: np.ndarray,
     *,
@@ -330,10 +353,21 @@ def fit_model(
     :param max_points_per_centroid: Train on a random subset when `n` exceeds this many points per centroid.
     :param backend: The backend chosen by `select_backend`.
     :param precision: Requested precision. The CPU backend always runs FP32 and warns once for `bf16` or `fp16`.
-    :param deterministic: Request deterministic algorithms; has no effect on CPU.
+    :param deterministic: Request deterministic algorithms on the GPU; CPU training is deterministic already.
     """
-    del deterministic  # CPU training is deterministic for a fixed seed already.
     faiss_import.check()
+    if backend.requested is not None:
+        return _fit_gpu(
+            x,
+            k=k,
+            spherical=spherical,
+            nepochs=nepochs,
+            seed=seed,
+            max_points_per_centroid=max_points_per_centroid,
+            backend=backend,
+            precision=precision,
+            deterministic=deterministic,
+        )
     if precision in ("bf16", "fp16"):
         logger.warning("precision '{precision}' is not supported on the CPU backend; using fp32", precision=precision)
     n, d = x.shape
@@ -371,6 +405,81 @@ def fit_model(
         "imbalance": imbalance,
     }
     return FitResult(centroids=np.ascontiguousarray(centroids, dtype=np.float32), info=info)
+
+
+def _n_train(n: int, k: int, max_points_per_centroid: int | None) -> int:
+    return int(max_points_per_centroid * k if max_points_per_centroid and n > max_points_per_centroid * k else n)
+
+
+def _fit_gpu(
+    x: np.ndarray,
+    *,
+    k: int,
+    spherical: bool,
+    nepochs: float,
+    seed: int,
+    max_points_per_centroid: int | None,
+    backend: BackendChoice,
+    precision: str,
+    deterministic: bool,
+) -> FitResult:
+    torch = importlib.import_module("torch")
+    e_means = importlib.import_module("faiss.contrib.e_means")
+    if precision in ("bf16", "fp16"):
+        logger.warning(
+            "precision '{precision}' is not supported on the {backend} GPU backend; using fp32",
+            precision=precision,
+            backend=backend.name,
+        )
+    n, d = x.shape
+    x_gpu = None
+    em = None
+    try:
+        em = e_means.QuantizedEmeans(
+            d,
+            k,
+            nepochs=nepochs,
+            seed=seed,
+            spherical=spherical,
+            max_points_per_centroid=max_points_per_centroid,
+            capture_assignments=False,
+            quantizer=None,
+            assignment_backend=backend.requested,
+        )
+        x_gpu = torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32)).to("cuda")
+        with _deterministic(torch, deterministic):
+            start = time.perf_counter()
+            centroids, _ = em.train(x_gpu)
+            torch.cuda.synchronize()
+            train_seconds = time.perf_counter() - start
+        result = np.ascontiguousarray(centroids.detach().float().cpu().numpy(), dtype=np.float32)
+        recipe = em.recipe
+        label = str(recipe["assignment_backend"])  # read after training: e-means resolves "auto" itself
+        precision_label = str(recipe["representation"]).removeprefix("torch.")
+        iteration_stats = em.iteration_stats
+        imbalance = (
+            float(iteration_stats[-1].get("imbalance_factor", float("nan"))) if iteration_stats else float("nan")
+        )
+        info: dict[str, Any] = {
+            "backend": _BACKEND_NAMES.get(label, f"gpu-{label}"),
+            "device_name": backend.device_name,
+            "precision_used": _PRECISION_NAMES.get(precision_label, precision_label),
+            "assignment_backend": label,
+            "recipe": recipe,
+            "n_train": _n_train(n, k, max_points_per_centroid),
+            "train_seconds": float(train_seconds),
+            "emeans_source": detect_emeans_source(),
+            "faiss_version": str(faiss.__version__),
+            "nepochs": float(recipe["nepochs"]),
+            "batch_size": int(recipe["batch_size"]),
+            "alpha0": float(recipe["alpha0"]),
+            "n_splits": int(em.n_splits),
+            "imbalance": imbalance,
+        }
+        return FitResult(centroids=result, info=info)
+    finally:
+        del x_gpu, em
+        torch.cuda.empty_cache()
 
 
 class _CpuAssigner:
