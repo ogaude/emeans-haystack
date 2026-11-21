@@ -37,7 +37,7 @@ def main() -> None:
     # overwrite=True: without it a re-run raises FileExistsError, because refitting changes every cluster_id.
     indexing.add_component(
         "fitter",
-        EmeansFitter(target_cluster_size=50, model_path=str(output_dir() / "clusters.npz"), overwrite=True),
+        EmeansFitter(target_cluster_size=25, model_path=str(output_dir() / "clusters.npz"), overwrite=True),
     )
     indexing.add_component("clusterer", EmeansDocumentClusterer())
     indexing.add_component("writer", DocumentWriter(document_store=store))

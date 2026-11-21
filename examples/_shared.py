@@ -210,7 +210,7 @@ def index_corpus(store: InMemoryDocumentStore, model_path: str) -> dict[str, Any
     """Run the Quick Start indexing pipeline over the corpus and return its result (including the fitter outputs)."""
     indexing = Pipeline()
     indexing.add_component("embedder", SentenceTransformersDocumentEmbedder())
-    indexing.add_component("fitter", EmeansFitter(target_cluster_size=50, model_path=model_path, overwrite=True))
+    indexing.add_component("fitter", EmeansFitter(target_cluster_size=25, model_path=model_path, overwrite=True))
     indexing.add_component("clusterer", EmeansDocumentClusterer())
     indexing.add_component("writer", DocumentWriter(document_store=store))
     indexing.connect("embedder.documents", "fitter.documents")
