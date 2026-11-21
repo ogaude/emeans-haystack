@@ -80,6 +80,10 @@ run = "python {args}"
 integration = 'pytest -m integration {args:tests}'
 
 # Local-only AMD ROCm env (RX 9060 XT): not used by CI, droppable on the upstream move.
+# Accepted risk: with `unsafe-best-match`, any package published on the AMD index with a higher version than on
+# PyPI wins (dependency confusion). Hatch installs extra-dependencies as plain `uv pip` requirements, outside uv's
+# project mode, so an explicit `[tool.uv.index]` + `[tool.uv.sources]` pin for torch is not relied on here. The env is
+# never built in CI, torch is pinned to an exact +rocm version, and the AMD index is a vendor index.
 [tool.hatch.envs.gpu]
 template = "test"
 extra-dependencies = ["torch[device-{env:EMEANS_ROCM_GFX:gfx1200}]==2.14.0+rocm10.1.0"]
