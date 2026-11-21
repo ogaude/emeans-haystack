@@ -615,3 +615,39 @@ def cpu_assigner(centroids: np.ndarray, *, spherical: bool) -> Assigner:
         otherwise squared L2 distances).
     """
     return _CpuAssigner(centroids, spherical=spherical)
+
+
+class _GpuAssigner:
+    """FP32 assignment on the GPU; reduced precision is never used for cluster ids."""
+
+    def __init__(self, centroids: np.ndarray, *, spherical: bool, requested: str) -> None:
+        self._torch = importlib.import_module("torch")
+        e_means = importlib.import_module("faiss.contrib.e_means")
+        k, d = centroids.shape
+        self._em = e_means.QuantizedEmeans(d, k, spherical=spherical, quantizer=None, assignment_backend=requested)
+        self._em.centroids = self._torch.from_numpy(np.ascontiguousarray(centroids, dtype=np.float32)).to("cuda")
+
+    def assign(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        chunk = self._torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32)).to("cuda")
+        try:
+            score, labels = self._em.assign(chunk)
+            return (
+                score.float().cpu().numpy().astype(np.float32),
+                labels.cpu().numpy().astype(np.int64),
+            )
+        finally:
+            del chunk
+
+
+def assigner_for(backend: BackendChoice, centroids: np.ndarray, *, spherical: bool) -> Assigner:
+    """
+    Build an assigner for saved centroids on the chosen backend.
+
+    :param backend: Backend chosen by `select_backend`; a CPU choice (`requested` is None) gives the CPU assigner.
+    :param centroids: float32 centroids of shape `(k, d)`.
+    :param spherical: Whether the model clusters by cosine similarity (otherwise squared L2 distances).
+    :returns: An assigner whose `assign` returns `(score, labels)`; GPU assignment is always FP32.
+    """
+    if backend.requested is None:
+        return cpu_assigner(centroids, spherical=spherical)
+    return _GpuAssigner(centroids, spherical=spherical, requested=backend.requested)

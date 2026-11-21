@@ -9,7 +9,7 @@ from typing import Any, Literal
 import numpy as np
 from haystack import Document, component, default_from_dict, default_to_dict, logging
 
-from haystack_integrations.components.preprocessors.emeans._backend import DEVICES, cpu_assigner, select_backend
+from haystack_integrations.components.preprocessors.emeans._backend import DEVICES, assigner_for, select_backend
 from haystack_integrations.components.preprocessors.emeans._model import EmeansModel, ModelCache, load_model
 from haystack_integrations.components.preprocessors.emeans._utils import (
     check_bool,
@@ -142,7 +142,8 @@ class EmeansDocumentClusterer:
             "No model at {path}: fitting one on this run's documents; the clusters depend on the first batch seen",
             path=path,
         )
-        fitter = EmeansFitter(model_path=path, overwrite=False, **(self.fit_params or {}))
+        params = {"device": self.device, "gpu_threshold": self.gpu_threshold, **(self.fit_params or {})}
+        fitter = EmeansFitter(model_path=path, overwrite=False, **params)
         try:
             fitter.run(documents=documents)
         except FileExistsError:
@@ -183,11 +184,11 @@ class EmeansDocumentClusterer:
         if x.shape[1] != model.d:
             msg = f"Embedding dimension mismatch: documents have dimension {x.shape[1]}, but the model has {model.d}"
             raise ValueError(msg)
-        select_backend(device=self.device, n=len(positions), k=model.k, gpu_threshold=self.gpu_threshold)
+        backend = select_backend(device=self.device, n=len(positions), k=model.k, gpu_threshold=self.gpu_threshold)
         if model.spherical:
             x = normalize_rows(x, [documents[p].id for p in positions])
 
-        assigner = cpu_assigner(model.centroids, spherical=model.spherical)
+        assigner = assigner_for(backend, model.centroids, spherical=model.spherical)
         metas: dict[int, dict[str, Any]] = {}
         for lo in range(0, len(positions), self.batch_size):
             scores, labels = assigner.assign(x[lo : lo + self.batch_size])

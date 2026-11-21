@@ -7,6 +7,7 @@ import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -14,6 +15,7 @@ from haystack import Document
 
 from haystack_integrations.components.preprocessors.emeans import EmeansDocumentClusterer, EmeansFitter
 from haystack_integrations.components.preprocessors.emeans import clusterer as clusterer_module
+from haystack_integrations.components.preprocessors.emeans._backend import BackendChoice, assigner_for, cpu_assigner
 from haystack_integrations.components.preprocessors.emeans._model import load_model
 
 MakeDocs = Callable[..., list[Document]]
@@ -286,6 +288,46 @@ class TestBatchAndDevice:
             EmeansDocumentClusterer(device="tpu")  # type: ignore[arg-type]
 
 
+class TestAssignerSelection:
+    def test_cpu_choice_gives_cpu_assigner_output(self, spherical_model: str, docs: list[Document]) -> None:
+        model = load_model(spherical_model)
+        choice = BackendChoice("cpu", "cpu", None)
+        x = _matrix(docs)[:20].astype(np.float32)
+        x /= np.linalg.norm(x, axis=1, keepdims=True)
+        got = assigner_for(choice, model.centroids, spherical=True).assign(x)
+        want = cpu_assigner(model.centroids, spherical=True).assign(x)
+        np.testing.assert_array_equal(got[1], want[1])
+        np.testing.assert_array_equal(got[0], want[0])
+
+    def test_run_passes_choice_and_chunks(
+        self, docs: list[Document], spherical_model: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fifty = docs[:50]
+        expected = EmeansDocumentClusterer(model_path=spherical_model).run(documents=fifty)["documents"]
+        choice = BackendChoice("native", "Fake GPU", None, requested="native")
+        seen: list[tuple[BackendChoice, bool]] = []
+        calls: list[int] = []
+
+        class _Counting:
+            def __init__(self, inner: Any) -> None:
+                self._inner = inner
+
+            def assign(self, x: np.ndarray) -> Any:
+                calls.append(len(x))
+                return self._inner.assign(x)
+
+        def _fake_assigner_for(backend: BackendChoice, centroids: np.ndarray, *, spherical: bool) -> Any:
+            seen.append((backend, spherical))
+            return _Counting(cpu_assigner(centroids, spherical=spherical))
+
+        monkeypatch.setattr(clusterer_module, "select_backend", lambda **_kw: choice)
+        monkeypatch.setattr(clusterer_module, "assigner_for", _fake_assigner_for)
+        out = EmeansDocumentClusterer(model_path=spherical_model, batch_size=16).run(documents=fifty)["documents"]
+        assert seen == [(choice, True)]
+        assert len(calls) == 4
+        assert [d.meta["cluster_id"] for d in out] == [d.meta["cluster_id"] for d in expected]
+
+
 class TestSerialisation:
     def test_round_trip_all_params(self) -> None:
         comp = EmeansDocumentClusterer(
@@ -397,3 +439,46 @@ class TestFitIfMissing:
         out = comp.run(documents=make_docs(60, unit=False))["documents"]
         assert not load_model(str(tmp_path / "e.npz")).spherical
         assert all("cluster_distance" in d.meta for d in out)
+
+
+class TestFitIfMissingDeviceInheritance:
+    @staticmethod
+    def _record(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+        seen: list[dict[str, Any]] = []
+
+        class _Recording(EmeansFitter):
+            def __init__(self, **kwargs: Any) -> None:
+                seen.append(kwargs)
+                super().__init__(**kwargs)
+
+        monkeypatch.setattr(clusterer_module, "EmeansFitter", _Recording)
+        return seen
+
+    # The first recorded call is the init-time fit_params validation; the implicit fit is the last.
+    def test_inherits_clusterer_settings(
+        self, docs: list[Document], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._record(monkeypatch)
+        comp = EmeansDocumentClusterer(
+            model_path=str(tmp_path / "a.npz"),
+            device="cpu",
+            gpu_threshold=123.0,
+            fit_if_missing=True,
+            fit_params={"k": 3},
+        )
+        comp.run(documents=docs)
+        assert seen[-1]["device"] == "cpu"
+        assert seen[-1]["gpu_threshold"] == 123.0
+
+    def test_fit_params_win(self, docs: list[Document], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen = self._record(monkeypatch)
+        comp = EmeansDocumentClusterer(
+            model_path=str(tmp_path / "b.npz"),
+            device="cpu",
+            gpu_threshold=123.0,
+            fit_if_missing=True,
+            fit_params={"k": 3, "device": "auto", "gpu_threshold": 5.0},
+        )
+        comp.run(documents=docs)
+        assert seen[-1]["device"] == "auto"
+        assert seen[-1]["gpu_threshold"] == 5.0

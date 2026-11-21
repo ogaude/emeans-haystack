@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from haystack import Document
 
-from haystack_integrations.components.preprocessors.emeans import EmeansFitter, _backend
+from haystack_integrations.components.preprocessors.emeans import EmeansDocumentClusterer, EmeansFitter, _backend
 from haystack_integrations.components.preprocessors.emeans._backend import (
     detect_emeans_source,
     detect_environment,
@@ -194,3 +194,36 @@ def test_detect_environment_real() -> None:
     assert env.device_name
     assert env.is_rocm == (torch.version.hip is not None)
     assert env.arch is not None
+
+
+@pytest.mark.parametrize("spherical", [True, False])
+def test_gpu_assignment_matches_cpu(tmp_path: Path, make_docs: MakeDocs, *, spherical: bool) -> None:
+    docs = make_docs(4000, d=64, n_clusters=16, unit=spherical)
+    model = str(tmp_path / "m.npz")
+    EmeansFitter(model_path=model, k=16, nepochs=2.0, spherical=spherical, device="cpu").run(documents=docs)
+    outs = {}
+    for device in ("cuda", "cpu"):
+        comp = EmeansDocumentClusterer(model_path=model, device=device, return_distance=True, batch_size=1000)
+        outs[device] = comp.run(documents=docs)["documents"]
+    key = "cluster_similarity" if spherical else "cluster_distance"
+    assert [d.meta["cluster_id"] for d in outs["cuda"]] == [d.meta["cluster_id"] for d in outs["cpu"]]
+    diff = max(abs(a.meta[key] - b.meta[key]) for a, b in zip(outs["cuda"], outs["cpu"], strict=True))
+    assert diff <= 1e-4
+
+
+def test_clusterer_auto_above_threshold_uses_gpu(
+    tmp_path: Path, make_docs: MakeDocs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docs = make_docs(2000, d=64, n_clusters=16)
+    model = str(tmp_path / "m.npz")
+    EmeansFitter(model_path=model, k=16, nepochs=2.0, device="cpu").run(documents=docs)
+    original = _backend._GpuAssigner.assign
+    calls: list[int] = []
+
+    def _spy(self: Any, x: np.ndarray) -> Any:
+        calls.append(len(x))
+        return original(self, x)
+
+    monkeypatch.setattr(_backend._GpuAssigner, "assign", _spy)
+    EmeansDocumentClusterer(model_path=model, device="auto", gpu_threshold=1).run(documents=docs)
+    assert len(calls) >= 1
