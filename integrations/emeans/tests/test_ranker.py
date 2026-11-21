@@ -147,11 +147,6 @@ def test_serialisation_round_trip() -> None:
 # On-the-fly assignment with a model
 
 
-@pytest.fixture(autouse=True)
-def _clear_model_cache() -> None:
-    ranker_module._MODEL_CACHE.clear()
-
-
 @pytest.fixture
 def fitted(tmp_path: Path, make_docs: Callable[..., list[Document]]) -> tuple[str, list[Document], EmeansModel]:
     docs = make_docs(60, n_clusters=3)
@@ -308,3 +303,15 @@ def test_model_cached_between_runs(
     os.utime(other, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
     ranker.run(docs[:2], model_path=other)
     assert len(calls) == 3
+
+
+def test_refit_with_unchanged_mtime_is_reloaded(fitted: tuple[str, list[Document], EmeansModel]) -> None:
+    path, docs, _ = fitted
+    unclustered = [Document(id=d.id, content=d.content, embedding=d.embedding, score=0.5) for d in docs]
+    ranker = EmeansClusterRanker(model_path=path, top_k=None)
+    assert len(ranker.run(unclustered)["documents"]) == 3
+    old = os.stat(path)
+    EmeansFitter(k=1, model_path=path, overwrite=True).run(docs)
+    os.utime(path, ns=(old.st_atime_ns, old.st_mtime_ns))  # coarse timestamps or `cp -p` can keep the mtime
+    assert os.stat(path).st_mtime_ns == old.st_mtime_ns
+    assert len(ranker.run(unclustered)["documents"]) == 1

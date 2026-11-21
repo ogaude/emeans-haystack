@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import os
 from typing import Any, Literal
 
 import numpy as np
 from haystack import Document, component, default_from_dict, default_to_dict, logging
 
 from haystack_integrations.components.preprocessors.emeans._backend import cpu_assigner
-from haystack_integrations.components.preprocessors.emeans._model import EmeansModel, load_model
+from haystack_integrations.components.preprocessors.emeans._model import ModelCache, load_model
 from haystack_integrations.components.preprocessors.emeans._utils import (
     check_positive_int,
     extract_embeddings,
@@ -17,21 +16,6 @@ from haystack_integrations.components.preprocessors.emeans._utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-_MODEL_CACHE: dict[str, tuple[int, EmeansModel]] = {}
-
-
-def _cached_model(path: str) -> EmeansModel:
-    """Load the model at `path`, reusing the previous load while the file is unchanged."""
-    if not os.path.exists(path):
-        return load_model(path)  # raises FileNotFoundError
-    mtime = os.stat(path).st_mtime_ns
-    cached = _MODEL_CACHE.get(path)
-    if cached is not None and cached[0] == mtime:
-        return cached[1]
-    model = load_model(path)
-    _MODEL_CACHE[path] = (mtime, model)
-    return model
 
 
 def _cluster_id_of(doc: Document) -> int | None:
@@ -85,6 +69,7 @@ class EmeansClusterRanker:
         self.top_k = top_k
         self.model_path = model_path
         self.missing_cluster = missing_cluster
+        self._models = ModelCache()
 
     def to_dict(self) -> dict[str, Any]:
         """
@@ -136,7 +121,7 @@ class EmeansClusterRanker:
         if path is not None:
             todo = [i for i, c in enumerate(cluster_ids) if c is None and documents[i].embedding is not None]
             if todo:
-                model = _cached_model(path)
+                model = self._models.get(path, load_model)
                 subset = [documents[i] for i in todo]
                 positions, x = extract_embeddings(subset, expected_dim=model.d)
                 if model.spherical:

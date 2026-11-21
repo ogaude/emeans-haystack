@@ -10,7 +10,7 @@ import numpy as np
 from haystack import Document, component, default_from_dict, default_to_dict, logging
 
 from haystack_integrations.components.preprocessors.emeans._backend import cpu_assigner, select_backend
-from haystack_integrations.components.preprocessors.emeans._model import EmeansModel, load_model
+from haystack_integrations.components.preprocessors.emeans._model import EmeansModel, ModelCache, load_model
 from haystack_integrations.components.preprocessors.emeans._utils import (
     check_positive_int,
     extract_embeddings,
@@ -74,8 +74,7 @@ class EmeansDocumentClusterer:
         self.gpu_threshold = gpu_threshold
         self.fit_if_missing = fit_if_missing
         self.fit_params = fit_params
-        self._model: EmeansModel | None = None
-        self._model_key: tuple[str, int] | None = None
+        self._models = ModelCache()
 
     @staticmethod
     def _validate_fit_params(fit_params: dict[str, Any] | None) -> None:
@@ -128,14 +127,7 @@ class EmeansDocumentClusterer:
     def _ensure_model(self, path: str, documents: list[Document] | None = None) -> EmeansModel:
         if documents is not None and self.fit_if_missing and not os.path.exists(path):
             self._auto_fit(path, documents)
-        try:
-            key: tuple[str, int] | None = (path, os.stat(path).st_mtime_ns)
-        except OSError:
-            key = None  # load_model reports the missing or unreadable file
-        if self._model is None or key is None or key != self._model_key:
-            self._model = load_model(path)
-            self._model_key = key
-        return self._model
+        return self._models.get(path, load_model)
 
     def _auto_fit(self, path: str, documents: list[Document]) -> None:
         logger.info(

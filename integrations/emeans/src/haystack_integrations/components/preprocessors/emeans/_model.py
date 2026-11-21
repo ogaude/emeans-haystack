@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
@@ -62,6 +63,44 @@ class EmeansModel:
     def spherical(self) -> bool:
         """Whether the model clusters by cosine similarity."""
         return bool(self.metadata["spherical"])
+
+
+class ModelCache:
+    """
+    Remembers the last model loaded and reloads it only when the path or the file changes.
+
+    A file counts as changed when its device, inode, size or modification time differ. `save_model` always writes
+    a new inode, so every rewrite by this package is detected even when the modification time is unchanged
+    (coarse filesystem timestamps, `cp -p`, restored backups).
+    """
+
+    def __init__(self) -> None:
+        """Create an empty cache."""
+        self._key: tuple[str, int, int, int, int] | None = None
+        self._model: EmeansModel | None = None
+
+    def get(self, path: str, loader: Callable[[str], EmeansModel]) -> EmeansModel:
+        """
+        Return the model at `path`, calling `loader(path)` unless the cached model comes from the same file.
+
+        :param path: Path of the model file.
+        :param loader: Function that loads a model file, normally `load_model`.
+        """
+        try:
+            st = os.stat(path)
+            key: tuple[str, int, int, int, int] | None = (
+                os.path.abspath(path),
+                st.st_dev,
+                st.st_ino,
+                st.st_size,
+                st.st_mtime_ns,
+            )
+        except OSError:
+            key = None  # the loader reports the missing or unreadable file
+        if self._model is None or key is None or key != self._key:
+            self._model = loader(path)
+            self._key = key
+        return self._model
 
 
 def save_model(path: str, centroids: np.ndarray, metadata: dict[str, Any], *, overwrite: bool) -> None:

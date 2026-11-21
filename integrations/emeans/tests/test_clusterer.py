@@ -209,9 +209,11 @@ class TestPathAndCache:
         comp = EmeansDocumentClusterer(model_path=spherical_model)
         out = comp.run(documents=docs)["documents"]
         assert max(d.meta["cluster_id"] for d in out) <= 3
+        old = os.stat(spherical_model)
         _fit(Path(spherical_model), docs, k=2, overwrite=True)
-        st = os.stat(spherical_model)
-        os.utime(spherical_model, ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000))
+        # Force the old mtime back, as coarse filesystem timestamps or `cp -p` would: the reload must not need it.
+        os.utime(spherical_model, ns=(old.st_atime_ns, old.st_mtime_ns))
+        assert os.stat(spherical_model).st_mtime_ns == old.st_mtime_ns
         out = comp.run(documents=docs)["documents"]
         assert {d.meta["cluster_id"] for d in out} <= {0, 1}
 
