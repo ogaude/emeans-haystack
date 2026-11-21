@@ -2,19 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 from dataclasses import replace
 from typing import Any, Literal
 
 import numpy as np
 from haystack import Document, component, default_from_dict, default_to_dict, logging
 
-from haystack_integrations.components.preprocessors.emeans._backend import cpu_assigner
+from haystack_integrations.components.preprocessors.emeans._backend import cpu_assigner, select_backend
 from haystack_integrations.components.preprocessors.emeans._model import EmeansModel, load_model
 from haystack_integrations.components.preprocessors.emeans._utils import (
     check_positive_int,
     extract_embeddings,
     normalize_rows,
 )
+from haystack_integrations.components.preprocessors.emeans.fitter import EmeansFitter
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,11 @@ class EmeansDocumentClusterer:
         :param fit_params: Fitter parameters used when `fit_if_missing` is set, except `model_path`.
         """
         check_positive_int("batch_size", batch_size)
+        if device not in ("auto", "cpu", "cuda"):
+            msg = f"device must be 'auto', 'cpu' or 'cuda', got {device!r}"
+            raise ValueError(msg)
+        if fit_if_missing:
+            self._validate_fit_params(fit_params)
         self.model_path = model_path
         self.return_distance = return_distance
         self.batch_size = batch_size
@@ -68,6 +75,21 @@ class EmeansDocumentClusterer:
         self.fit_if_missing = fit_if_missing
         self.fit_params = fit_params
         self._model: EmeansModel | None = None
+        self._model_key: tuple[str, int] | None = None
+
+    @staticmethod
+    def _validate_fit_params(fit_params: dict[str, Any] | None) -> None:
+        params = fit_params or {}
+        forbidden = sorted({"model_path", "overwrite"} & params.keys())
+        if forbidden:
+            msg = f"fit_params must not contain {forbidden}: the model path is the clusterer's and it never overwrites"
+            raise ValueError(msg)
+        try:
+            # The fitter constructor only validates; it does no file access.
+            EmeansFitter(model_path="<fit_if_missing>", **params)
+        except TypeError as e:
+            msg = f"fit_params is not a valid fitter configuration: {e}"
+            raise ValueError(msg) from e
 
     def to_dict(self) -> dict[str, Any]:
         """
@@ -97,14 +119,35 @@ class EmeansDocumentClusterer:
         return default_from_dict(cls, data)
 
     def warm_up(self) -> None:
-        """Load the model for the init `model_path`, if one is set."""
-        if self.model_path is not None:
-            self._load(self.model_path)
+        """Load the model for the init `model_path`, if one is set and available."""
+        if self.model_path is None:
+            return
+        if os.path.exists(self.model_path) or not self.fit_if_missing:
+            self._ensure_model(self.model_path)
 
-    def _load(self, path: str) -> EmeansModel:
-        if self._model is None or self._model.path != path:
+    def _ensure_model(self, path: str, documents: list[Document] | None = None) -> EmeansModel:
+        if documents is not None and self.fit_if_missing and not os.path.exists(path):
+            self._auto_fit(path, documents)
+        try:
+            key: tuple[str, int] | None = (path, os.stat(path).st_mtime_ns)
+        except OSError:
+            key = None  # load_model reports the missing or unreadable file
+        if self._model is None or key is None or key != self._model_key:
             self._model = load_model(path)
+            self._model_key = key
         return self._model
+
+    def _auto_fit(self, path: str, documents: list[Document]) -> None:
+        logger.info(
+            "No model at {path}: fitting one on this run's documents; the clusters depend on the first batch seen",
+            path=path,
+        )
+        fitter = EmeansFitter(model_path=path, overwrite=False, **(self.fit_params or {}))
+        try:
+            fitter.run(documents=documents)
+        except FileExistsError:
+            # Another writer created the file first; use theirs.
+            logger.info("Model {path} was created concurrently; using it", path=path)
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document], model_path: str | None = None) -> dict[str, Any]:
@@ -112,22 +155,33 @@ class EmeansDocumentClusterer:
         Write `meta["cluster_id"]` on every document that has an embedding.
 
         :param documents: Documents to cluster. They are not modified; copies are returned in the same order.
+            Documents without embedding are returned unchanged.
         :param model_path: Model to load; replaces the init value.
         :returns: A dictionary with the `documents`, in input order.
         :raises ValueError: If no model path is available, or on invalid embeddings.
-        :raises FileNotFoundError: If the model file does not exist.
+        :raises FileNotFoundError: If the model file does not exist and `fit_if_missing` is not set.
+        :raises RuntimeError: If `device="cuda"` and no GPU backend is usable.
         """
         path = model_path if model_path is not None else self.model_path
         if path is None:
             msg = "No model path: set model_path at init or pass it to run()"
             raise ValueError(msg)
-        model = self._load(path)
+        if not documents:
+            return {"documents": []}
 
-        positions, x = extract_embeddings(documents, expected_dim=model.d)
+        positions, x = extract_embeddings(documents)
         n_skipped = len(documents) - len(positions)
         if n_skipped:
             logger.warning("{n} documents without embedding were returned unchanged", n=n_skipped)
-        if model.spherical and len(positions):
+        if not positions:
+            return {"documents": list(documents)}
+
+        model = self._ensure_model(path, documents)
+        if x.shape[1] != model.d:
+            msg = f"Embedding dimension mismatch: documents have dimension {x.shape[1]}, but the model has {model.d}"
+            raise ValueError(msg)
+        select_backend(device=self.device, n=len(positions), k=model.k, gpu_threshold=self.gpu_threshold)
+        if model.spherical:
             x = normalize_rows(x, [documents[p].id for p in positions])
 
         assigner = cpu_assigner(model.centroids, spherical=model.spherical)
@@ -141,7 +195,7 @@ class EmeansDocumentClusterer:
                     if model.spherical:
                         meta["cluster_similarity"] = float(np.clip(score, -1.0, 1.0))
                     else:
-                        meta["cluster_distance"] = float(score)
+                        meta["cluster_distance"] = float(max(score, 0.0))
                 metas[positions[lo + offset]] = meta
 
         out = [replace(doc, meta=metas[i]) if i in metas else doc for i, doc in enumerate(documents)]
