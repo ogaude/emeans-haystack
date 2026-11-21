@@ -210,11 +210,12 @@ def index_corpus(store: InMemoryDocumentStore, model_path: str) -> dict[str, Any
     """Run the Quick Start indexing pipeline over the corpus and return its result (including the fitter outputs)."""
     indexing = Pipeline()
     indexing.add_component("embedder", SentenceTransformersDocumentEmbedder())
+    # overwrite=True: without it a re-run raises FileExistsError, because refitting changes every cluster_id.
     indexing.add_component("fitter", EmeansFitter(target_cluster_size=25, model_path=model_path, overwrite=True))
     indexing.add_component("clusterer", EmeansDocumentClusterer())
     indexing.add_component("writer", DocumentWriter(document_store=store))
     indexing.connect("embedder.documents", "fitter.documents")
     indexing.connect("embedder.documents", "clusterer.documents")
-    indexing.connect("fitter.model_path", "clusterer.model_path")
+    indexing.connect("fitter.model_path", "clusterer.model_path")  # also makes the clusterer run after the fitter
     indexing.connect("clusterer.documents", "writer.documents")
     return indexing.run({"embedder": {"documents": corpus_documents()}}, include_outputs_from={"fitter"})

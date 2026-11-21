@@ -12,18 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _shared import TOPICS, corpus_documents, output_dir
-from haystack import Pipeline
-from haystack.components.writers import DocumentWriter
+from _shared import TOPICS, corpus_documents, index_corpus, output_dir
 from haystack.document_stores.in_memory import InMemoryDocumentStore
-
-from haystack_integrations.components.embedders.sentence_transformers import (
-    SentenceTransformersDocumentEmbedder,
-)
-from haystack_integrations.components.preprocessors.emeans import (
-    EmeansDocumentClusterer,
-    EmeansFitter,
-)
 
 
 def main() -> None:
@@ -32,21 +22,9 @@ def main() -> None:
     store = InMemoryDocumentStore()
     print(f"corpus: {len(docs)} documents, {len(TOPICS)} topics")
 
-    indexing = Pipeline()
-    indexing.add_component("embedder", SentenceTransformersDocumentEmbedder())
-    # overwrite=True: without it a re-run raises FileExistsError, because refitting changes every cluster_id.
-    indexing.add_component(
-        "fitter",
-        EmeansFitter(target_cluster_size=25, model_path=str(output_dir() / "clusters.npz"), overwrite=True),
-    )
-    indexing.add_component("clusterer", EmeansDocumentClusterer())
-    indexing.add_component("writer", DocumentWriter(document_store=store))
-    indexing.connect("embedder.documents", "fitter.documents")
-    indexing.connect("embedder.documents", "clusterer.documents")
-    indexing.connect("fitter.model_path", "clusterer.model_path")  # also makes the clusterer run after the fitter
-    indexing.connect("clusterer.documents", "writer.documents")
-
-    result = indexing.run({"embedder": {"documents": docs}}, include_outputs_from={"fitter"})
+    # The Quick Start indexing pipeline (embedder -> fitter + clusterer -> writer) lives in _shared.index_corpus,
+    # so that examples 01 and 02 index the corpus the same way (target_cluster_size=25, overwrite=True).
+    result = index_corpus(store, str(output_dir() / "clusters.npz"))
     print(result["fitter"]["stats"]["k"], result["fitter"]["stats"]["backend"])
     stored = store.filter_documents()
     print(stored[0].meta["cluster_id"])
