@@ -163,6 +163,20 @@ def test_fork_reduced_precision(
     assert _warnings(caplog) == []
 
 
+def test_fp16_out_of_range_embeddings_train_in_fp32(
+    tmp_path: Path, make_docs: MakeDocs, caplog: pytest.LogCaptureFixture
+) -> None:
+    if torch.version.hip is None or detect_emeans_source() != "e-means-rocm":
+        pytest.skip("needs the e-means-rocm fork on ROCm")
+    docs = make_docs(2000, d=64, n_clusters=16, unit=False)
+    docs = [Document(content=d.content, embedding=[v * 1e5 for v in d.embedding or []]) for d in docs]
+    with caplog.at_level(logging.DEBUG):
+        stats = _fitter(tmp_path, precision="fp16", spherical=False).run(documents=docs)["stats"]
+    assert stats["precision_used"] == "fp32"
+    assert any("fp16 range" in r.getMessage() for r in _warnings(caplog))
+    assert np.isfinite(load_model(str(tmp_path / "m.npz")).centroids).all()
+
+
 @pytest.mark.parametrize("precision", ["bf16", "fp16"])
 def test_upstream_amd_reduced_precision_degrades(
     tmp_path: Path, make_docs: MakeDocs, caplog: pytest.LogCaptureFixture, precision: str

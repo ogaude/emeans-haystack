@@ -534,6 +534,10 @@ def _fit_gpu(
     train_precision, warning = resolve_precision(backend, precision)
     if warning is not None:
         logger.warning("{warning}", warning=warning)
+    if train_precision == "fp16" and x.size and float(np.abs(x).max()) > float(np.finfo(np.float16).max):
+        # e-means does not check GPU data for infinity, so a value outside the FP16 range would train silently.
+        logger.warning("embeddings exceed the fp16 range; using fp32")
+        train_precision = "fp32"
     n, d = x.shape
     x_gpu = None
     em = None

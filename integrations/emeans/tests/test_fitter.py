@@ -327,6 +327,29 @@ class TestFiles:
             make_fitter(tmp_path).run(documents=make_docs(40))
         assert list(tmp_path.iterdir()) == []
 
+    @pytest.mark.parametrize("spherical", [True, False])
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_non_finite_centroid_keeps_existing_model(
+        self, tmp_path: Path, make_docs: MakeDocs, monkeypatch: pytest.MonkeyPatch, spherical: bool, bad: float
+    ) -> None:
+        docs = make_docs(40)
+        target = tmp_path / "m.npz"
+        make_fitter(tmp_path, spherical=spherical).run(documents=docs)
+        good = target.read_bytes()
+        real = fitter.fit_model
+
+        def fake(*args: Any, **kwargs: Any) -> FitResult:
+            result = real(*args, **kwargs)
+            centroids = result.centroids.copy()
+            centroids[1, 0] = bad
+            return FitResult(centroids=centroids, info=result.info)
+
+        monkeypatch.setattr(fitter, "fit_model", fake)
+        with pytest.raises(ValueError, match="1 non-finite centroids"):
+            make_fitter(tmp_path, spherical=spherical, overwrite=True).run(documents=docs)
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["m.npz"]
+        assert target.read_bytes() == good
+
     def test_non_unit_spherical_centroid_writes_nothing(
         self, tmp_path: Path, make_docs: MakeDocs, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -168,7 +168,8 @@ class EmeansFitter:
         :raises FileNotFoundError: If the parent directory of the model path does not exist.
         :raises IsADirectoryError: If the model path is a directory and `overwrite` is `True`.
         :raises RuntimeError: If `device="cuda"` and no GPU backend is usable.
-        :raises ValueError: On invalid parameters or embeddings, or if the fit produced an empty spherical centroid.
+        :raises ValueError: On invalid parameters or embeddings, or if the fit produced a non-finite centroid or an
+            empty spherical centroid.
         """
         if k is not None or target_cluster_size is not None:
             check_positive_int("k", k, allow_none=True)
@@ -218,6 +219,16 @@ class EmeansFitter:
             deterministic=self.deterministic,
         )
         info = fit.info
+        # The GPU engine does not check its data for NaN or infinity, and NaN passes every norm comparison below.
+        # Check finiteness first, on every backend, so the fitter never writes a model its own loader refuses.
+        finite_rows = np.isfinite(fit.centroids).all(axis=1)
+        if not finite_rows.all():
+            n_bad = int(np.count_nonzero(~finite_rows))
+            msg = (
+                f"The fit produced {n_bad} non-finite centroids out of {n_clusters}; "
+                "use precision='fp32' or check the embeddings"
+            )
+            raise ValueError(msg)
         if self.spherical:
             norms = np.linalg.norm(fit.centroids.astype(np.float64), axis=1)
             n_empty = int(np.count_nonzero(norms < _EMPTY_CENTROID_NORM))
