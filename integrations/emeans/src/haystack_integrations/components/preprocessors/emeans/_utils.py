@@ -138,17 +138,18 @@ def extract_embeddings(
         return positions, np.zeros((0, dim or 0), dtype=np.float32)
 
     x64 = np.asarray(rows, dtype=np.float64)
-    _check_finite(x64, documents, positions)
-    x32 = np.ascontiguousarray(x64.astype(np.float32))
-    _check_finite(x32, documents, positions)
+    _check_finite(x64, documents, positions, "contains NaN or infinite values")
+    with np.errstate(over="ignore"):  # overflow is reported below with its own message
+        x32 = np.ascontiguousarray(x64.astype(np.float32))
+    _check_finite(x32, documents, positions, "has values outside the float32 range")
     return positions, x32
 
 
-def _check_finite(x: np.ndarray, documents: Sequence[Document], positions: list[int]) -> None:
+def _check_finite(x: np.ndarray, documents: Sequence[Document], positions: list[int], problem: str) -> None:
     bad_rows = np.flatnonzero(~np.isfinite(x).all(axis=1))
     if bad_rows.size:
         doc_id = documents[positions[int(bad_rows[0])]].id
-        msg = f"Embedding of document {doc_id} contains NaN or infinite values"
+        msg = f"Embedding of document {doc_id} {problem}"
         raise ValueError(msg)
 
 

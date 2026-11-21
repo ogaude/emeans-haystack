@@ -4,6 +4,7 @@
 
 import dataclasses
 import logging
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -223,6 +224,16 @@ class TestEmbeddings:
         set_embedding(docs, 2, [bad, *(docs[2].embedding or [])[1:]])
         with pytest.raises(ValueError, match=docs[2].id):
             make_fitter(tmp_path).run(documents=docs)
+
+    def test_out_of_float32_range_has_own_message(self, tmp_path: Path, make_docs: MakeDocs) -> None:
+        docs = make_docs(20)
+        set_embedding(docs, 2, [1e39, *(docs[2].embedding or [])[1:]])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            with pytest.raises(ValueError, match="outside the float32 range") as info:
+                make_fitter(tmp_path).run(documents=docs)
+        assert docs[2].id in str(info.value)
+        assert "NaN" not in str(info.value)
 
     def test_spherical_zero_vector(self, tmp_path: Path, make_docs: MakeDocs) -> None:
         docs = make_docs(20)
