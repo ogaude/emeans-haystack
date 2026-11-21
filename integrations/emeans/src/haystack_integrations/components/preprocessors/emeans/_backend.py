@@ -343,10 +343,9 @@ def detect_environment() -> EnvInfo:
         return unavailable
     try:
         torch = importlib.import_module("torch")
-    except ImportError:
-        return unavailable
-    except (OSError, RuntimeError) as error:
-        # A broken ROCm/CUDA install often fails to load its shared libraries with OSError or RuntimeError.
+    except Exception as error:
+        # find_spec found torch, so it is installed and any import failure means a broken install. A ROCm/CUDA build
+        # whose shared libraries cannot be loaded usually raises ImportError, sometimes OSError or RuntimeError.
         reason = f"PyTorch is installed but could not be imported: {type(error).__name__}: {error}"
         return EnvInfo(False, False, False, fork, None, None, None, mismatch_reason=reason)
     hip_version = torch.version.hip

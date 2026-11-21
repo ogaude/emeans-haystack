@@ -190,7 +190,15 @@ def _pretend_torch_installed(monkeypatch: pytest.MonkeyPatch, module: object) ->
     monkeypatch.setattr(importlib, "import_module", load)
 
 
-@pytest.mark.parametrize("error", [OSError("libamdhip64.so: cannot open"), RuntimeError("bad build")])
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("libamdhip64.so: cannot open"),
+        RuntimeError("bad build"),
+        ImportError("libamdhip64.so: cannot open shared object file"),
+        ModuleNotFoundError("No module named 'sympy'"),
+    ],
+)
 def test_detect_environment_broken_torch_import(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
     _pretend_torch_installed(monkeypatch, error)
     env = detect_environment()
