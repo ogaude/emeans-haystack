@@ -79,6 +79,8 @@ class EmeansFitter:
         :param seed: Seeds starting centroids, shuffling and cluster revival.
         :param deterministic: On GPU, request deterministic algorithms during training. No effect on CPU. On
             NVIDIA, export `CUBLAS_WORKSPACE_CONFIG=:4096:8` before starting the process for guaranteed repeats.
+            PyTorch's setting is process-wide: while the fit trains, GPU work in other threads (other fits,
+            cluster assignment, backend probes) also runs with deterministic algorithms on.
         :param max_points_per_centroid: If set and `n > max_points_per_centroid * k`, train on a random subset.
         :param overwrite: If `False`, an existing file at `model_path` raises `FileExistsError`.
         """

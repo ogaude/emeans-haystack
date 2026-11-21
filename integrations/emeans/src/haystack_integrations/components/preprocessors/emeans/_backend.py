@@ -517,6 +517,11 @@ def _deterministic(torch: Any, enabled: bool) -> Iterator[None]:
     `CUBLAS_WORKSPACE_CONFIG` is set for the body only when unset and removed afterwards; PyTorch may already have
     chosen its cuBLAS workspace by then, so users who need guaranteed reproducibility on NVIDIA should export it
     before starting the process.
+
+    Known limitation: the lock serialises deterministic bodies against each other only. While one holds it, the
+    process-global setting and the temporary `CUBLAS_WORKSPACE_CONFIG` also apply to GPU work in other threads
+    (a non-deterministic fit, `_GpuAssigner.assign`, `_run_probe`). Taking the lock around that work as well would
+    serialise all GPU work in the process, so it is documented instead.
     """
     if not enabled:
         yield
@@ -560,6 +565,7 @@ def fit_model(
     :param backend: The backend chosen by `select_backend`.
     :param precision: Requested precision. The CPU backend always runs FP32 and warns once for `bf16` or `fp16`.
     :param deterministic: Request deterministic algorithms on the GPU; CPU training is deterministic already.
+        The setting is process-wide while the fit trains, so GPU work in other threads runs with it too.
     """
     faiss_import.check()
     if backend.requested is not None:
