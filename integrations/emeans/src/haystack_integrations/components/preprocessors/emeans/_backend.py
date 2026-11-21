@@ -651,6 +651,7 @@ def _fit_gpu(
     n, d = x.shape
     x_gpu = None
     em = None
+    centroids = None
     try:
         engine = e_means.QuantizedEmeans if train_precision == "fp32" else e_means.Emeans
         extra: dict[str, Any] = {"quantizer": None} if train_precision == "fp32" else {}
@@ -704,7 +705,8 @@ def _fit_gpu(
         }
         return FitResult(centroids=result, info=info)
     finally:
-        del x_gpu, em
+        # Drop every GPU tensor before empty_cache(), or the centroids' memory stays allocated.
+        del x_gpu, em, centroids
         torch.cuda.empty_cache()
 
 
@@ -735,6 +737,7 @@ class _GpuAssigner:
     """FP32 assignment on the GPU; reduced precision is never used for cluster ids."""
 
     def __init__(self, centroids: np.ndarray, *, spherical: bool, requested: str) -> None:
+        faiss_import.check()
         self._torch = importlib.import_module("torch")
         e_means = importlib.import_module("faiss.contrib.e_means")
         k, d = centroids.shape
