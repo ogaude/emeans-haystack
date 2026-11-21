@@ -125,6 +125,16 @@ def test_unusable_cluster_id_is_missing(value: object) -> None:
     assert EmeansClusterRanker(missing_cluster="drop").run(docs)["documents"] == []
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_score_ranks_like_none(bad: float, caplog: pytest.LogCaptureFixture) -> None:
+    forward = [_doc("bad", 1, bad), _doc("good", 1, 0.9)]
+    backward = list(reversed(forward))
+    with caplog.at_level(logging.WARNING):
+        assert _ids(EmeansClusterRanker().run(forward)) == ["good"]
+        assert _ids(EmeansClusterRanker().run(backward)) == ["good"]
+    assert all("non-finite" in w.getMessage() for w in _warnings(caplog))
+
+
 def test_empty_input_no_warning(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
         assert EmeansClusterRanker().run([]) == {"documents": []}

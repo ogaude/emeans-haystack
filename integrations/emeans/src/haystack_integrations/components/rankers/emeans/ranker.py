@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 from typing import Any, Literal
 
 import numpy as np
@@ -105,14 +106,18 @@ class EmeansClusterRanker:
         if not documents:
             return {"documents": []}
 
+        # A NaN score compares false against everything, which would make the winner depend on input order, so
+        # non-finite scores rank like missing ones.
+        usable = [doc.score is not None and math.isfinite(doc.score) for doc in documents]
+
         def key(i: int) -> tuple[bool, float, int]:
             score = documents[i].score
-            return (score is None, -(score if score is not None else 0.0), i)
+            return (not usable[i], -score if usable[i] and score is not None else 0.0, i)
 
-        n_unscored = sum(1 for doc in documents if doc.score is None)
+        n_unscored = usable.count(False)
         if n_unscored:
             logger.warning(
-                "{n} documents have no score; they rank after scored documents.",
+                "{n} documents have no score (or a non-finite one); they rank after scored documents.",
                 n=n_unscored,
             )
 
