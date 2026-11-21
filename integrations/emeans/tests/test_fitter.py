@@ -286,6 +286,20 @@ class TestFiles:
         make_fitter(tmp_path, k=2, overwrite=True).run(documents=make_docs(40))
         assert load_model(str(tmp_path / "m.npz")).k == 2
 
+    def test_directory_at_model_path_fails_before_training(
+        self, tmp_path: Path, make_docs: MakeDocs, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def spy(*_args: object, **_kwargs: object) -> None:
+            pytest.fail("fit_model must not be called")
+
+        monkeypatch.setattr(fitter, "fit_model", spy)
+        target = tmp_path / "a_dir"
+        target.mkdir()
+        with pytest.raises(IsADirectoryError, match="a_dir"):
+            make_fitter(tmp_path, model_path=str(target), overwrite=True).run(documents=make_docs(40))
+        with pytest.raises(FileExistsError):
+            make_fitter(tmp_path, model_path=str(target)).run(documents=make_docs(40))
+
     def test_missing_parent_directory(
         self, tmp_path: Path, make_docs: MakeDocs, monkeypatch: pytest.MonkeyPatch
     ) -> None:

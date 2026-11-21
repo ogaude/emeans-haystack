@@ -167,6 +167,7 @@ class EmeansFitter:
         :returns: A dictionary with `model_path` (the file written) and `stats` (a report of the fit).
         :raises FileExistsError: If the file exists and `overwrite` is `False`.
         :raises FileNotFoundError: If the parent directory of the model path does not exist.
+        :raises IsADirectoryError: If the model path is a directory and `overwrite` is `True`.
         :raises RuntimeError: If `device="cuda"` and no GPU backend is usable.
         :raises ValueError: On invalid parameters or embeddings, or if the fit produced an empty spherical centroid.
         """
@@ -186,6 +187,9 @@ class EmeansFitter:
         if os.path.exists(path) and not self.overwrite:
             msg = f"Model file already exists: {path}. Pass overwrite=True to replace it."
             raise FileExistsError(msg)
+        if os.path.isdir(path):
+            msg = f"model_path is a directory, not a file: {path}"
+            raise IsADirectoryError(msg)
 
         positions, x = extract_embeddings(documents)
         n_usable = len(positions)
