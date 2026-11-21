@@ -91,12 +91,13 @@ unit = 'pytest -m "not integration" {args:tests}'
 run = "python {args}"
 
 # Local only: needs EMEANS_ROCM_FORK pointing at the e-means-rocm clone. Re-run `link` after the env is
-# recreated or faiss-cpu is upgraded.
+# recreated or faiss-cpu is upgraded; `unlink` puts the faiss-cpu copy back.
 [tool.hatch.envs.gpu-fork]
 template = "gpu"
 
 [tool.hatch.envs.gpu-fork.scripts]
 link = "python ../../scripts/link_fork.py"
+unlink = "python ../../scripts/link_fork.py --restore"
 gpu-tests = 'pytest -m gpu {args:tests}'
 unit = 'pytest -m "not integration" {args:tests}'
 run = "python {args}"
