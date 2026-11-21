@@ -50,16 +50,19 @@ def _remove_fork_copy(dst: Path) -> None:
 
 def _restore(dst: Path) -> int:
     backup = dst.with_name(_BACKUP_NAME)
-    if _is_fork_copy(dst):
-        _remove_fork_copy(dst)
-    if backup.is_dir() and not dst.exists():
-        backup.rename(dst)
-        sys.stdout.write(f"restored {dst} from {backup}\n")
-    elif dst.is_dir():
+    fork_copy = _is_fork_copy(dst)
+    if not fork_copy and dst.is_dir():
         sys.stdout.write(f"{dst} is already the faiss-cpu copy\n")
-    else:
-        sys.stderr.write(f"No backup at {backup}; reinstall faiss-cpu to restore {dst}\n")
+        return 0
+    # Check for the backup before removing anything, so a failed restore never leaves the env without e_means.
+    if not backup.is_dir():
+        kept = f"; left {dst} in place" if fork_copy else ""
+        sys.stderr.write(f"No backup at {backup}{kept}. Reinstall faiss-cpu to restore {dst}\n")
         return 2
+    if fork_copy:
+        _remove_fork_copy(dst)
+    backup.rename(dst)
+    sys.stdout.write(f"restored {dst} from {backup}\n")
     return 0
 
 
@@ -68,7 +71,7 @@ def main() -> int:
     Replace the environment's `faiss/contrib/e_means` with a copy of the fork named by `EMEANS_ROCM_FORK`.
 
     The faiss-cpu copy is kept as `e_means.pypi-orig`. With `--restore`, remove the fork copy and put the faiss-cpu
-    copy back from that backup.
+    copy back from that backup; nothing is removed when there is no backup.
 
     :returns: 0 on success, 2 when `EMEANS_ROCM_FORK` is unset or does not point at a fork clone, when not run
         inside a virtual environment, or when `--restore` finds no backup.
