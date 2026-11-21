@@ -106,13 +106,19 @@ def test_missing_cluster_one_warning(policy: str, caplog: pytest.LogCaptureFixtu
     assert "2 documents have no usable cluster_id" in warnings[0].getMessage()
 
 
-@pytest.mark.parametrize("value", [3, np.int64(3), 3.0, np.int32(3)])
+@pytest.mark.parametrize("value", [3, np.int64(3), 3.0, np.int32(3), np.float32(3.0), np.float64(3.0)])
 def test_accepted_cluster_id_types(value: object) -> None:
     docs = [_doc("a", 3, 0.5), _doc("b", value, 0.9)]
     assert _ids(EmeansClusterRanker().run(docs)) == ["b"]
 
 
-@pytest.mark.parametrize("value", [True, "3", 3.5, None])
+def test_numpy_top_k_is_stored_as_int() -> None:
+    ranker = EmeansClusterRanker(top_k=np.int64(2))  # type: ignore[arg-type]
+    assert type(ranker.top_k) is int
+    assert type(ranker.to_dict()["init_parameters"]["top_k"]) is int
+
+
+@pytest.mark.parametrize("value", [True, np.bool_(True), "3", 3.5, np.float32(3.5), float("nan"), None])
 def test_unusable_cluster_id_is_missing(value: object) -> None:
     docs = [_doc("a", value, 0.5), _doc("b", value, 0.9)]
     assert _ids(EmeansClusterRanker(missing_cluster="keep").run(docs)) == ["b", "a"]

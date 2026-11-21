@@ -243,6 +243,10 @@ class TestBatchAndDevice:
         with pytest.raises(ValueError, match="batch_size"):
             EmeansDocumentClusterer(model_path="m.npz", batch_size=bad)  # type: ignore[arg-type]
 
+    def test_numpy_batch_size_accepted(self) -> None:
+        comp = EmeansDocumentClusterer(model_path="m.npz", batch_size=np.int64(7))  # type: ignore[arg-type]
+        assert type(comp.batch_size) is int
+
     @pytest.mark.parametrize(
         ("name", "bad"),
         [

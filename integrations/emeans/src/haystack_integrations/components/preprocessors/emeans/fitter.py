@@ -18,6 +18,7 @@ from haystack_integrations.components.preprocessors.emeans._utils import (
     check_threshold,
     extract_embeddings,
     normalize_rows,
+    optional_int,
     resolve_k,
 )
 
@@ -98,16 +99,16 @@ class EmeansFitter:
             msg = f"precision must be one of {_PRECISIONS}, got {precision!r}"
             raise ValueError(msg)
         self.model_path = model_path
-        self.k = k
-        self.target_cluster_size = target_cluster_size
+        self.k = optional_int(k)
+        self.target_cluster_size = optional_int(target_cluster_size)
         self.spherical = spherical
         self.nepochs = nepochs
         self.precision = precision
         self.device = device
         self.gpu_threshold = gpu_threshold
-        self.seed = seed
+        self.seed = int(seed)
         self.deterministic = deterministic
-        self.max_points_per_centroid = max_points_per_centroid
+        self.max_points_per_centroid = optional_int(max_points_per_centroid)
         self.overwrite = overwrite
 
     @staticmethod
@@ -172,7 +173,7 @@ class EmeansFitter:
         if k is not None or target_cluster_size is not None:
             check_positive_int("k", k, allow_none=True)
             check_positive_int("target_cluster_size", target_cluster_size, allow_none=True)
-            use_k, use_tcs = k, target_cluster_size
+            use_k, use_tcs = optional_int(k), optional_int(target_cluster_size)
         else:
             use_k, use_tcs = self.k, self.target_cluster_size
         self._check_exactly_one(use_k, use_tcs)

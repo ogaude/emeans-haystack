@@ -13,6 +13,7 @@ from haystack_integrations.components.preprocessors.emeans._utils import (
     check_positive_int,
     extract_embeddings,
     normalize_rows,
+    optional_int,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ def _cluster_id_of(doc: Document) -> int | None:
         return None
     if isinstance(value, (int, np.integer)):
         return int(value)
-    if isinstance(value, float) and value.is_integer():
+    if isinstance(value, (float, np.floating)) and float(value).is_integer():
         return int(value)
     return None
 
@@ -66,7 +67,7 @@ class EmeansClusterRanker:
         if missing_cluster not in ("keep", "drop"):
             msg = f"missing_cluster must be 'keep' or 'drop', got {missing_cluster!r}"
             raise ValueError(msg)
-        self.top_k = top_k
+        self.top_k = optional_int(top_k)
         self.model_path = model_path
         self.missing_cluster = missing_cluster
         self._models = ModelCache()
@@ -100,7 +101,7 @@ class EmeansClusterRanker:
         :returns: A dictionary with the kept input `documents`, unchanged.
         """
         check_positive_int("top_k", top_k, allow_none=True)
-        limit = top_k if top_k is not None else self.top_k
+        limit = optional_int(top_k) if top_k is not None else self.top_k
         if not documents:
             return {"documents": []}
 

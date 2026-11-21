@@ -74,7 +74,7 @@ class EmeansDocumentClusterer:
             self._validate_fit_params(fit_params)
         self.model_path = model_path
         self.return_distance = return_distance
-        self.batch_size = batch_size
+        self.batch_size = int(batch_size)
         self.device = device
         self.gpu_threshold = gpu_threshold
         self.fit_if_missing = fit_if_missing

@@ -91,6 +91,11 @@ class TestInit:
         with pytest.raises(ValueError):
             make_fitter(tmp_path, **kwargs)
 
+    def test_numpy_integers_accepted_and_stored_as_int(self, tmp_path: Path) -> None:
+        f = make_fitter(tmp_path, k=np.int64(3), seed=np.int32(7), max_points_per_centroid=np.int64(50))
+        assert (type(f.k), type(f.seed), type(f.max_points_per_centroid)) == (int, int, int)
+        assert (f.k, f.seed, f.max_points_per_centroid) == (3, 7, 50)
+
     def test_no_filesystem_access(self, tmp_path: Path) -> None:
         EmeansFitter(model_path=str(tmp_path / "missing" / "m.npz"), k=2)
 

@@ -14,7 +14,8 @@ def check_positive_int(name: str, value: object, *, allow_none: bool = False) ->
     """
     Raise `ValueError` unless `value` is an integer of at least 1 (or `None` when allowed).
 
-    Booleans are rejected even though they are integers in Python.
+    Python and NumPy integers are accepted; booleans are rejected even though they are integers in Python. Callers
+    store `int(value)` so that NumPy integers never reach serialisation.
 
     :param name: Parameter name used in the error message.
     :param value: Value to check.
@@ -22,9 +23,14 @@ def check_positive_int(name: str, value: object, *, allow_none: bool = False) ->
     """
     if value is None and allow_none:
         return
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Integral) or int(value) < 1:
         msg = f"{name} must be a positive integer{' or None' if allow_none else ''}, got {value!r}"
         raise ValueError(msg)
+
+
+def optional_int(value: int | None) -> int | None:
+    """Return `value` as a plain Python `int` (NumPy integers included), or `None` unchanged."""
+    return None if value is None else int(value)
 
 
 def check_bool(name: str, value: object) -> None:
