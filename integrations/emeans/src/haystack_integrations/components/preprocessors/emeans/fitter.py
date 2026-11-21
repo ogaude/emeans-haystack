@@ -8,7 +8,7 @@ from typing import Any, Literal
 import numpy as np
 from haystack import Document, component, default_from_dict, default_to_dict, logging
 
-from haystack_integrations.components.preprocessors.emeans._backend import fit_model, select_backend
+from haystack_integrations.components.preprocessors.emeans._backend import DEVICES, fit_model, select_backend
 from haystack_integrations.components.preprocessors.emeans._model import UNIT_NORM_TOLERANCE, save_model
 from haystack_integrations.components.preprocessors.emeans._utils import (
     check_bool,
@@ -24,7 +24,6 @@ from haystack_integrations.components.preprocessors.emeans._utils import (
 
 logger = logging.getLogger(__name__)
 
-_DEVICES = ("auto", "cpu", "cuda")
 _PRECISIONS = ("auto", "fp32", "bf16", "fp16")
 _MIN_USABLE_DOCUMENTS = 2
 _EMPTY_CENTROID_NORM = 0.5
@@ -92,8 +91,8 @@ class EmeansFitter:
         check_bool("overwrite", overwrite)
         check_integer("seed", seed)
         check_threshold("gpu_threshold", gpu_threshold)
-        if device not in _DEVICES:
-            msg = f"device must be one of {_DEVICES}, got {device!r}"
+        if device not in DEVICES:
+            msg = f"device must be one of {DEVICES}, got {device!r}"
             raise ValueError(msg)
         if precision not in _PRECISIONS:
             msg = f"precision must be one of {_PRECISIONS}, got {precision!r}"

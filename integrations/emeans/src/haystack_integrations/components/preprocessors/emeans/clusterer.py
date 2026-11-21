@@ -9,7 +9,7 @@ from typing import Any, Literal
 import numpy as np
 from haystack import Document, component, default_from_dict, default_to_dict, logging
 
-from haystack_integrations.components.preprocessors.emeans._backend import cpu_assigner, select_backend
+from haystack_integrations.components.preprocessors.emeans._backend import DEVICES, cpu_assigner, select_backend
 from haystack_integrations.components.preprocessors.emeans._model import EmeansModel, ModelCache, load_model
 from haystack_integrations.components.preprocessors.emeans._utils import (
     check_bool,
@@ -67,7 +67,7 @@ class EmeansDocumentClusterer:
         check_bool("return_distance", return_distance)
         check_bool("fit_if_missing", fit_if_missing)
         check_threshold("gpu_threshold", gpu_threshold)
-        if device not in ("auto", "cpu", "cuda"):
+        if device not in DEVICES:
             msg = f"device must be 'auto', 'cpu' or 'cuda', got {device!r}"
             raise ValueError(msg)
         if fit_if_missing:

@@ -21,7 +21,7 @@ with LazyImport("Run 'pip install \"faiss-cpu>=1.16.0\"'") as faiss_import:
 
 logger = logging.getLogger(__name__)
 
-_DEVICES = ("auto", "cpu", "cuda")
+DEVICES: tuple[str, ...] = ("auto", "cpu", "cuda")
 
 
 @dataclass(frozen=True)
@@ -113,7 +113,7 @@ def select_backend(
     :raises RuntimeError: If `device="cuda"` and no GPU backend is usable.
     :raises ValueError: If `device` is not a known value.
     """
-    if device not in _DEVICES:
+    if device not in DEVICES:
         msg = f"device must be 'auto', 'cpu' or 'cuda', got {device!r}"
         raise ValueError(msg)
     if device == "cpu":
