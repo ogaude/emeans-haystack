@@ -590,13 +590,13 @@ def test_fitter_info_line_carries_hint(
 
 # resolve_precision
 
-NATIVE = BackendChoice("nvidia-triton", "Fake GPU", None, requested="triton")
+TRITON = BackendChoice("nvidia-triton", "Fake GPU", None, requested="triton")
 FAIL = ProbeResult(False, None, "RuntimeError: nope")
 
 
 def test_resolve_precision_fp32_skips_probe() -> None:
     fake = FakeProbe()
-    assert resolve_precision(NATIVE, "fp32", fake) == ("fp32", None)
+    assert resolve_precision(TRITON, "fp32", fake) == ("fp32", None)
     assert fake.calls == []
 
 
@@ -606,14 +606,14 @@ def test_resolve_precision_fp32_skips_probe() -> None:
 )
 def test_resolve_precision_silent_rows(precision: str, ok: bool, expected: str) -> None:
     fake = FakeProbe({} if ok else {"nvidia-triton": FAIL})
-    assert resolve_precision(NATIVE, precision, fake) == (expected, None)
+    assert resolve_precision(TRITON, precision, fake) == (expected, None)
     wanted = "bf16" if precision == "auto" else precision
     assert fake.calls == [("nvidia-triton", "triton", wanted)]
 
 
 @pytest.mark.parametrize("precision", ["bf16", "fp16"])
 def test_resolve_precision_explicit_failure_warns(precision: str) -> None:
-    used, warning = resolve_precision(NATIVE, precision, FakeProbe({"nvidia-triton": FAIL}))
+    used, warning = resolve_precision(TRITON, precision, FakeProbe({"nvidia-triton": FAIL}))
     assert used == "fp32"
     assert warning is not None
     assert precision in warning
@@ -635,8 +635,8 @@ def test_resolve_precision_probe_memoised(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(_backend, "_run_probe", counting)
     _backend.clear_probe_cache()
     try:
-        assert resolve_precision(NATIVE, "bf16") == ("bf16", None)
-        assert resolve_precision(NATIVE, "auto") == ("bf16", None)
+        assert resolve_precision(TRITON, "bf16") == ("bf16", None)
+        assert resolve_precision(TRITON, "auto") == ("bf16", None)
     finally:
         _backend.clear_probe_cache()
     assert calls == [("triton", "bf16")]
