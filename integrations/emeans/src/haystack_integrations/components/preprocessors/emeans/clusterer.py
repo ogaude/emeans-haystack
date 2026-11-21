@@ -132,12 +132,20 @@ class EmeansDocumentClusterer:
         if os.path.exists(self.model_path) or not self.fit_if_missing:
             self._ensure_model(self.model_path)
 
-    def _ensure_model(self, path: str, documents: list[Document] | None = None) -> EmeansModel:
+    def _ensure_model(self, path: str, documents: list[Document] | None = None) -> tuple[EmeansModel, bool]:
+        """Load the model, auto-fitting it first when allowed; also return whether the fit chose the backend."""
+        warned = False
         if documents is not None and self.fit_if_missing and not os.path.exists(path):
-            self._auto_fit(path, documents)
-        return self._models.get(path, load_model)
+            warned = self._auto_fit(path, documents)
+        return self._models.get(path, load_model), warned
 
-    def _auto_fit(self, path: str, documents: list[Document]) -> None:
+    def _auto_fit(self, path: str, documents: list[Document]) -> bool:
+        """
+        Fit and save a model on `documents`.
+
+        :returns: True when the fit ran with this component's device settings, so any backend fallback warning
+            for this run has already been logged.
+        """
         logger.info(
             "No model at {path}: fitting one on this run's documents; the clusters depend on the first batch seen",
             path=path,
@@ -146,9 +154,11 @@ class EmeansDocumentClusterer:
         fitter = EmeansFitter(model_path=path, overwrite=False, **params)
         try:
             fitter.run(documents=documents)
+            return params["device"] == self.device and params["gpu_threshold"] == self.gpu_threshold
         except FileExistsError:
             # Another writer created the file first; use theirs.
             logger.info("Model {path} was created concurrently; using it", path=path)
+            return False
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document], model_path: str | None = None) -> dict[str, Any]:
@@ -180,11 +190,18 @@ class EmeansDocumentClusterer:
         if self.device == "cuda":
             # Fail before _ensure_model, which may auto-fit and write a model file; k does not matter for "cuda".
             select_backend(device=self.device, n=len(positions), k=1, gpu_threshold=self.gpu_threshold)
-        model = self._ensure_model(path, documents)
+        model, fit_warned = self._ensure_model(path, documents)
         if x.shape[1] != model.d:
             msg = f"Embedding dimension mismatch: documents have dimension {x.shape[1]}, but the model has {model.d}"
             raise ValueError(msg)
-        backend = select_backend(device=self.device, n=len(positions), k=model.k, gpu_threshold=self.gpu_threshold)
+        # An auto-fit in this run already logged any fallback warning; log it once per run (D-03).
+        backend = select_backend(
+            device=self.device,
+            n=len(positions),
+            k=model.k,
+            gpu_threshold=self.gpu_threshold,
+            warn=not fit_warned,
+        )
         if model.spherical:
             x = normalize_rows(x, [documents[p].id for p in positions])
 

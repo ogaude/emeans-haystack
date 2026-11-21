@@ -13,9 +13,14 @@ import numpy as np
 import pytest
 from haystack import Document
 
-from haystack_integrations.components.preprocessors.emeans import EmeansDocumentClusterer, EmeansFitter
+from haystack_integrations.components.preprocessors.emeans import EmeansDocumentClusterer, EmeansFitter, _backend
 from haystack_integrations.components.preprocessors.emeans import clusterer as clusterer_module
-from haystack_integrations.components.preprocessors.emeans._backend import BackendChoice, assigner_for, cpu_assigner
+from haystack_integrations.components.preprocessors.emeans._backend import (
+    BackendChoice,
+    EnvInfo,
+    assigner_for,
+    cpu_assigner,
+)
 from haystack_integrations.components.preprocessors.emeans._model import load_model
 
 MakeDocs = Callable[..., list[Document]]
@@ -482,3 +487,39 @@ class TestFitIfMissingDeviceInheritance:
         comp.run(documents=docs)
         assert seen[-1]["device"] == "auto"
         assert seen[-1]["gpu_threshold"] == 5.0
+
+
+class TestFitIfMissingWarnsOnce:
+    @staticmethod
+    def _broken_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+        env = EnvInfo(False, False, False, False, None, None, None, mismatch_reason="PyTorch could not be imported")
+        monkeypatch.setattr(_backend, "detect_environment", lambda: env)
+
+    @staticmethod
+    def _fallback_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.levelname == "WARNING" and "no GPU backend usable" in r.getMessage()]
+
+    def test_auto_fit_and_assign_warn_once(
+        self, docs: list[Document], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._broken_gpu(monkeypatch)
+        comp = EmeansDocumentClusterer(
+            model_path=str(tmp_path / "w.npz"), gpu_threshold=1, fit_if_missing=True, fit_params={"k": 3}
+        )
+        with caplog.at_level(logging.WARNING):
+            comp.run(documents=docs)
+        assert len(self._fallback_warnings(caplog)) == 1
+
+    def test_assign_still_warns_when_the_fit_used_other_device_settings(
+        self, docs: list[Document], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._broken_gpu(monkeypatch)
+        comp = EmeansDocumentClusterer(
+            model_path=str(tmp_path / "c.npz"),
+            gpu_threshold=1,
+            fit_if_missing=True,
+            fit_params={"k": 3, "device": "cpu"},
+        )
+        with caplog.at_level(logging.WARNING):
+            comp.run(documents=docs)
+        assert len(self._fallback_warnings(caplog)) == 1

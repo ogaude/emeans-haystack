@@ -403,6 +403,7 @@ def select_backend(
     gpu_threshold: float,
     env: EnvInfo | None = None,
     gpu_rungs: Sequence[GpuRung] | None = None,
+    warn: bool = True,
 ) -> BackendChoice:
     """
     Pick the backend for a run.
@@ -419,6 +420,8 @@ def select_backend(
     :param gpu_threshold: With `device="auto"`, a GPU is considered only when `n * k` reaches this value.
     :param env: Detected environment; detected here when omitted and a GPU is considered.
     :param gpu_rungs: GPU backends to try in order; `None` means the default ladder.
+    :param warn: Log fallback warnings. Pass `False` when the same run has already logged them, for example
+        after an auto-fit, so each run warns once.
     :raises RuntimeError: If `device="cuda"` and no GPU backend is usable.
     :raises ValueError: If `device` is not a known value.
     :raises torch.OutOfMemoryError: If `device="cuda"` and a rung's probe runs out of GPU memory.
@@ -431,7 +434,7 @@ def select_backend(
     if device == "auto" and n * k < gpu_threshold:
         return BackendChoice("cpu", "cpu", None)
     environment = env if env is not None else detect_environment()
-    warn = environment.mismatch_reason is not None
+    should_warn = environment.mismatch_reason is not None
     if environment.mismatch_reason is not None:
         detail = environment.mismatch_reason
     elif not environment.torch_importable:
@@ -451,19 +454,19 @@ def select_backend(
                 reason = f"probe ran out of GPU memory ({type(error).__name__}: {error})"
                 oom_rungs.append(rung.name)
             if reason is None:
-                if oom_rungs:
+                if oom_rungs and warn:
                     logger.warning(
                         "GPU probe ran out of memory on {oom}; using {rung}", oom=", ".join(oom_rungs), rung=rung.name
                     )
                 return BackendChoice(rung.name, environment.device_name or "cuda", None, requested=rung.requested)
             reasons.append(f"{rung.name}: {reason}")
         detail = "; ".join(reasons) or "no GPU backend registered"
-        warn = True
+        should_warn = True
     if device == "cuda":
         msg = f"device='cuda' requested but no GPU backend usable: {detail}"
         raise RuntimeError(msg)
     fallback_reason = f"no GPU backend usable: {detail}"
-    if warn:
+    if should_warn and warn:
         logger.warning("{reason}", reason=fallback_reason)
     return BackendChoice("cpu", "cpu", fallback_reason)
 
