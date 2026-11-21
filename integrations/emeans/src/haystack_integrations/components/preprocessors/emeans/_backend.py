@@ -177,7 +177,8 @@ def fit_model(
     centroids, _ = em.train(x)
     train_seconds = time.perf_counter() - start
     recipe = em.recipe
-    iteration_stats = em.iteration_stats or [{}]
+    iteration_stats = em.iteration_stats
+    imbalance = float(iteration_stats[-1].get("imbalance_factor", float("nan"))) if iteration_stats else float("nan")
     info: dict[str, Any] = {
         "backend": backend.name,  # the backend that ran, not e-means' own "faiss" label
         "device_name": backend.device_name,
@@ -194,7 +195,7 @@ def fit_model(
         "batch_size": int(recipe["batch_size"]),
         "alpha0": float(recipe["alpha0"]),
         "n_splits": int(em.n_splits),
-        "imbalance": float(iteration_stats[-1]["imbalance_factor"]),
+        "imbalance": imbalance,
     }
     return FitResult(centroids=np.ascontiguousarray(centroids, dtype=np.float32), info=info)
 

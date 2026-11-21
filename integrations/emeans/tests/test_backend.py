@@ -155,6 +155,18 @@ def test_fit_model_info_plain_types() -> None:
         assert type(info[key]) is expected, key
 
 
+@pytest.mark.parametrize("stats", [[], [{}]])
+def test_fit_model_imbalance_nan_without_iteration_stats(monkeypatch: pytest.MonkeyPatch, stats: list) -> None:
+    class NoStats(_backend.NumpyEmeans):  # type: ignore[misc,name-defined]
+        def train(self, x: np.ndarray) -> object:
+            result = super().train(x)
+            self.iteration_stats = list(stats)
+            return result
+
+    monkeypatch.setattr(_backend, "NumpyEmeans", NoStats)
+    assert np.isnan(fit().info["imbalance"])
+
+
 def test_fit_model_n_train_subsample() -> None:
     assert fit(max_points_per_centroid=5).info["n_train"] == 20
     assert fit().info["n_train"] == 100
