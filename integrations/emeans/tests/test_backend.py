@@ -5,6 +5,7 @@
 import importlib.util
 import logging
 import sys
+import types
 from importlib.machinery import ModuleSpec
 
 import numpy as np
@@ -166,6 +167,62 @@ def test_detect_environment_without_torch(monkeypatch: pytest.MonkeyPatch, outco
     assert env.torch_importable is False
     assert env.gpu_available is False
     assert ("torch" in sys.modules) == imported_before
+
+
+def _pretend_torch_installed(monkeypatch: pytest.MonkeyPatch, module: object) -> None:
+    real_find = importlib.util.find_spec
+    real_import = importlib.import_module
+
+    def find(name: str, *args: object) -> ModuleSpec | None:
+        if name == "torch":
+            return ModuleSpec(name, None)
+        return real_find(name, *args)  # type: ignore[arg-type]
+
+    def load(name: str, *args: object) -> object:
+        if name == "torch":
+            if isinstance(module, BaseException):
+                raise module
+            return module
+        return real_import(name, *args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(importlib.util, "find_spec", find)
+    monkeypatch.setattr(importlib, "import_module", load)
+
+
+@pytest.mark.parametrize("error", [OSError("libamdhip64.so: cannot open"), RuntimeError("bad build")])
+def test_detect_environment_broken_torch_import(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+    _pretend_torch_installed(monkeypatch, error)
+    env = detect_environment()
+    assert env.torch_importable is False
+    assert env.gpu_available is False
+    assert env.mismatch_reason is not None
+    assert type(error).__name__ in env.mismatch_reason
+    with pytest.raises(RuntimeError, match="could not be imported"):
+        select_backend(device="cuda", n=10, k=2, gpu_threshold=1, env=env)
+
+
+def test_detect_environment_gpu_init_error_falls_back_with_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def boom(_index: int) -> str:
+        msg = "HIP error: invalid device ordinal"
+        raise RuntimeError(msg)
+
+    fake_torch = types.SimpleNamespace(
+        __version__="2.14.0+rocm10.1.0",
+        version=types.SimpleNamespace(hip="10.1", cuda=None),
+        cuda=types.SimpleNamespace(is_available=lambda: True, get_device_name=boom),
+    )
+    _pretend_torch_installed(monkeypatch, fake_torch)
+    env = detect_environment()
+    assert env.torch_importable is True
+    assert env.gpu_available is False
+    assert env.mismatch_reason is not None
+    assert "could not initialise the GPU" in env.mismatch_reason
+    with caplog.at_level(logging.DEBUG):
+        choice = select_backend(device="auto", n=10, k=2, gpu_threshold=1, env=env)
+    assert choice.name == "cpu"
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
 
 
 def test_fit_model_info_plain_types() -> None:

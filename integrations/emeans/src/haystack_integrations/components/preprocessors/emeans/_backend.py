@@ -281,19 +281,28 @@ def detect_environment() -> EnvInfo:
         torch = importlib.import_module("torch")
     except ImportError:
         return unavailable
+    except (OSError, RuntimeError) as error:
+        # A broken ROCm/CUDA install often fails to load its shared libraries with OSError or RuntimeError.
+        reason = f"PyTorch is installed but could not be imported: {type(error).__name__}: {error}"
+        return EnvInfo(False, False, False, fork, None, None, None, mismatch_reason=reason)
     hip_version = torch.version.hip
-    gpu_available = bool(torch.cuda.is_available())
     device_name: str | None = None
     arch: str | None = None
-    if gpu_available:
-        device_name = str(torch.cuda.get_device_name(0))
-        if hip_version is not None:
-            arch = getattr(torch.cuda.get_device_properties(0), "gcnArchName", None)
-        else:
-            major, minor = torch.cuda.get_device_capability(0)
-            arch = f"sm_{major}{minor}"
+    init_error: str | None = None
+    try:
+        gpu_available = bool(torch.cuda.is_available())
+        if gpu_available:
+            device_name = str(torch.cuda.get_device_name(0))
+            if hip_version is not None:
+                arch = getattr(torch.cuda.get_device_properties(0), "gcnArchName", None)
+            else:
+                major, minor = torch.cuda.get_device_capability(0)
+                arch = f"sm_{major}{minor}"
+    except (OSError, RuntimeError) as error:
+        gpu_available, device_name, arch = False, None, None
+        init_error = f"PyTorch could not initialise the GPU: {type(error).__name__}: {error}"
     amd_node, nvidia_node = _device_nodes()
-    mismatch = mismatch_reason(
+    mismatch = init_error or mismatch_reason(
         amd_node=amd_node,
         nvidia_node=nvidia_node,
         torch_version=str(torch.__version__),
@@ -345,10 +354,10 @@ def select_backend(
         return BackendChoice("cpu", "cpu", None)
     environment = env if env is not None else detect_environment()
     warn = environment.mismatch_reason is not None
-    if not environment.torch_importable:
-        detail = "PyTorch is not installed"
-    elif environment.mismatch_reason is not None:
+    if environment.mismatch_reason is not None:
         detail = environment.mismatch_reason
+    elif not environment.torch_importable:
+        detail = "PyTorch is not installed"
     elif not environment.gpu_available:
         detail = "no GPU visible to PyTorch"
     else:
