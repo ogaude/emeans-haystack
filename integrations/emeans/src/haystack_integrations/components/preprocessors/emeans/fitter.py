@@ -77,7 +77,8 @@ class EmeansFitter:
         :param device: `"cpu"`, `"cuda"` or `"auto"`.
         :param gpu_threshold: With `device="auto"`, a GPU is used only when `n * k` is at least this value.
         :param seed: Seeds starting centroids, shuffling and cluster revival.
-        :param deterministic: On GPU, request deterministic algorithms during training. No effect on CPU.
+        :param deterministic: On GPU, request deterministic algorithms during training. No effect on CPU. On
+            NVIDIA, export `CUBLAS_WORKSPACE_CONFIG=:4096:8` before starting the process for guaranteed repeats.
         :param max_points_per_centroid: If set and `n > max_points_per_centroid * k`, train on a random subset.
         :param overwrite: If `False`, an existing file at `model_path` raises `FileExistsError`.
         """

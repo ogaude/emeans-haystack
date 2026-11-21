@@ -4,6 +4,7 @@
 
 import importlib.util
 import logging
+import os
 import sys
 import types
 from importlib.machinery import ModuleSpec
@@ -284,3 +285,39 @@ def test_fit_deterministic_cpu(caplog: pytest.LogCaptureFixture) -> None:
         b = fit(deterministic=True).centroids
     assert warnings_in(caplog) == []
     np.testing.assert_array_equal(a, b)
+
+
+class _FakeDeterministicTorch:
+    def __init__(self, hip: str | None) -> None:
+        self.version = types.SimpleNamespace(hip=hip)
+        self.enabled = False
+        self.calls: list[tuple[bool, bool]] = []
+
+    def are_deterministic_algorithms_enabled(self) -> bool:
+        return self.enabled
+
+    def is_deterministic_algorithms_warn_only_enabled(self) -> bool:
+        return False
+
+    def use_deterministic_algorithms(self, mode: bool, *, warn_only: bool = False) -> None:
+        self.enabled = mode
+        self.calls.append((mode, warn_only))
+
+
+@pytest.mark.parametrize("hip", [None, "10.1"])
+def test_deterministic_restores_mode_and_env(monkeypatch: pytest.MonkeyPatch, hip: str | None) -> None:
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    fake = _FakeDeterministicTorch(hip)
+    with pytest.raises(KeyError), _backend._deterministic(fake, enabled=True):
+        assert fake.enabled is True
+        assert ("CUBLAS_WORKSPACE_CONFIG" in os.environ) == (hip is None)
+        raise KeyError
+    assert fake.enabled is False
+    assert "CUBLAS_WORKSPACE_CONFIG" not in os.environ
+
+
+def test_deterministic_keeps_user_cublas_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":16:8")
+    with _backend._deterministic(_FakeDeterministicTorch(None), enabled=True):
+        assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":16:8"
+    assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":16:8"

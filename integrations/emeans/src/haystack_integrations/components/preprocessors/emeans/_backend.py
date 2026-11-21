@@ -406,21 +406,35 @@ _BACKEND_NAMES = {"native": "gpu-pytorch", "triton": "gpu-triton", "cute": "gpu-
 _PRECISION_NAMES = {"float32": "fp32", "bfloat16": "bf16", "float16": "fp16"}
 
 
+_DETERMINISTIC_LOCK = threading.Lock()
+
+
 @contextlib.contextmanager
 def _deterministic(torch: Any, enabled: bool) -> Iterator[None]:
-    """Run the body with PyTorch's deterministic algorithms on, then restore the previous setting."""
+    """
+    Run the body with PyTorch's deterministic algorithms on, then restore the previous setting.
+
+    The setting is process-global, so deterministic bodies are serialised with a lock. On CUDA builds,
+    `CUBLAS_WORKSPACE_CONFIG` is set for the body only when unset and removed afterwards; PyTorch may already have
+    chosen its cuBLAS workspace by then, so users who need guaranteed reproducibility on NVIDIA should export it
+    before starting the process.
+    """
     if not enabled:
         yield
         return
-    previous = torch.are_deterministic_algorithms_enabled()
-    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
-    if torch.version.hip is None:
-        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-    torch.use_deterministic_algorithms(True)
-    try:
-        yield
-    finally:
-        torch.use_deterministic_algorithms(previous, warn_only=warn_only)
+    with _DETERMINISTIC_LOCK:
+        previous = torch.are_deterministic_algorithms_enabled()
+        warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+        set_env = torch.version.hip is None and "CUBLAS_WORKSPACE_CONFIG" not in os.environ
+        if set_env:
+            os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+        try:
+            torch.use_deterministic_algorithms(True)
+            yield
+        finally:
+            torch.use_deterministic_algorithms(previous, warn_only=warn_only)
+            if set_env:
+                os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
 
 
 def fit_model(
