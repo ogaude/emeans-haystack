@@ -1,0 +1,380 @@
+# SPDX-FileCopyrightText: 2026-present ogaude <ogaude.code@proton.me>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+import logging
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pytest
+from haystack import Document
+
+from haystack_integrations.components.preprocessors.emeans import EmeansFitter, _backend, fitter
+from haystack_integrations.components.preprocessors.emeans._backend import (
+    BackendChoice,
+    EnvInfo,
+    ProbeResult,
+    _backend_hint,
+    default_rungs,
+    mismatch_reason,
+    select_backend,
+)
+
+AMD_MISMATCH = (
+    "AMD GPU found (/dev/kfd) but PyTorch 2.15.0 is not a ROCm build; "
+    "install the ROCm build of PyTorch and do not use the [gpu] extra"
+)
+NVIDIA_MISMATCH = (
+    "NVIDIA GPU found but PyTorch 2.15.0 is a CPU-only build; "
+    "install a CUDA build of PyTorch, for example with the [gpu] extra"
+)
+HINT = "(the e-means-rocm fork adds Triton kernels and BF16/FP16 on RX 9000 GPUs)"
+
+
+def warnings_in(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def gpu_env(**overrides: Any) -> EnvInfo:
+    params: dict[str, Any] = {
+        "torch_importable": True,
+        "gpu_available": True,
+        "is_rocm": False,
+        "fork_detected": False,
+        "device_name": "Fake GPU",
+        "torch_version": "2.15.0",
+        "hip_version": None,
+    }
+    params.update(overrides)
+    return EnvInfo(**params)
+
+
+OK = ProbeResult(True, "auto", None)
+
+
+def fail(reason: str) -> ProbeResult:
+    return ProbeResult(False, None, reason)
+
+
+class FakeProbe:
+    """Probe stand-in that records its calls; rungs not listed pass."""
+
+    def __init__(self, results: dict[str, ProbeResult] | None = None) -> None:
+        self.results = results or {}
+        self.calls: list[tuple[str, str, str]] = []
+
+    def __call__(self, rung_name: str, requested: str, precision: str) -> ProbeResult:
+        self.calls.append((rung_name, requested, precision))
+        return self.results.get(rung_name, OK)
+
+
+def choose(env: EnvInfo, probe: FakeProbe, device: str = "auto") -> BackendChoice:
+    return select_backend(device=device, n=100, k=10, gpu_threshold=1, env=env, gpu_rungs=default_rungs(probe_fn=probe))
+
+
+# mismatch_reason table
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        (
+            {"amd_node": True, "nvidia_node": False, "hip_version": None, "cuda_version": None, "gpu_available": False},
+            AMD_MISMATCH,
+        ),
+        (
+            {
+                "amd_node": True,
+                "nvidia_node": False,
+                "hip_version": "7.16",
+                "cuda_version": None,
+                "gpu_available": False,
+            },
+            None,
+        ),
+        (
+            {
+                "amd_node": True,
+                "nvidia_node": False,
+                "hip_version": None,
+                "cuda_version": "12.8",
+                "gpu_available": True,
+            },
+            None,
+        ),
+        (
+            {"amd_node": False, "nvidia_node": True, "hip_version": None, "cuda_version": None, "gpu_available": False},
+            NVIDIA_MISMATCH,
+        ),
+        (
+            {
+                "amd_node": False,
+                "nvidia_node": True,
+                "hip_version": None,
+                "cuda_version": "12.8",
+                "gpu_available": False,
+            },
+            None,
+        ),
+        (
+            {
+                "amd_node": False,
+                "nvidia_node": False,
+                "hip_version": None,
+                "cuda_version": None,
+                "gpu_available": False,
+            },
+            None,
+        ),
+    ],
+)
+def test_mismatch_reason_table(kwargs: dict[str, Any], expected: str | None) -> None:
+    assert mismatch_reason(torch_version="2.15.0", **kwargs) == expected
+
+
+def test_mismatch_reason_text_names_fix() -> None:
+    text = mismatch_reason(
+        amd_node=True,
+        nvidia_node=False,
+        torch_version="2.15.0",
+        hip_version=None,
+        cuda_version=None,
+        gpu_available=False,
+    )
+    assert text is not None
+    for fragment in ("AMD GPU found", "2.15.0", "not a ROCm build", "[gpu]"):
+        assert fragment in text
+
+
+# ladder
+
+
+def test_nvidia_all_ok_picks_auto() -> None:
+    probe = FakeProbe()
+    choice = choose(gpu_env(), probe)
+    assert choice == BackendChoice("nvidia-auto", "Fake GPU", None, requested="auto")
+
+
+def test_nvidia_auto_fails_picks_triton(caplog: pytest.LogCaptureFixture) -> None:
+    probe = FakeProbe({"nvidia-auto": fail("ImportError: CuTe assignment requires nvidia-cutlass-dsl")})
+    with caplog.at_level(logging.DEBUG):
+        choice = choose(gpu_env(), probe)
+    assert (choice.name, choice.requested) == ("nvidia-triton", "triton")
+    assert warnings_in(caplog) == []
+
+
+def test_nvidia_auto_and_triton_fail_picks_native() -> None:
+    probe = FakeProbe({"nvidia-auto": fail("a"), "nvidia-triton": fail("b")})
+    choice = choose(gpu_env(), probe)
+    assert (choice.name, choice.requested) == ("native", "native")
+
+
+def test_amd_with_fork_picks_fork_triton() -> None:
+    probe = FakeProbe()
+    choice = choose(gpu_env(is_rocm=True, hip_version="7.16", fork_detected=True), probe)
+    assert (choice.name, choice.requested) == ("fork-triton", "auto")
+    assert [call[0] for call in probe.calls] == ["fork-triton"]
+
+
+def test_amd_without_fork_picks_native_silently(caplog: pytest.LogCaptureFixture) -> None:
+    probe = FakeProbe()
+    with caplog.at_level(logging.DEBUG):
+        choice = choose(gpu_env(is_rocm=True, hip_version="7.16"), probe)
+    assert (choice.name, choice.requested) == ("native", "native")
+    assert [call[0] for call in probe.calls] == ["native"]
+    assert warnings_in(caplog) == []
+
+
+class CompilationError(Exception):
+    """Stands in for a Triton compilation error that is not a RuntimeError."""
+
+
+@pytest.mark.parametrize("error", [ImportError, RuntimeError, CompilationError])
+def test_fork_probe_failure_falls_to_native(error: type[Exception]) -> None:
+    probe = FakeProbe({"fork-triton": fail(f"{error.__name__}: boom")})
+    choice = choose(gpu_env(is_rocm=True, hip_version="7.16", fork_detected=True), probe)
+    assert (choice.name, choice.requested) == ("native", "native")
+
+
+def test_all_rungs_fail_auto_warns_once(caplog: pytest.LogCaptureFixture) -> None:
+    probe = FakeProbe({"nvidia-auto": fail("r1"), "nvidia-triton": fail("r2"), "native": fail("r3")})
+    with caplog.at_level(logging.DEBUG):
+        choice = choose(gpu_env(), probe)
+    assert choice.name == "cpu"
+    reason = choice.fallback_reason
+    assert reason is not None
+    assert reason.startswith("no GPU backend usable: ")
+    for fragment in ("nvidia-auto: r1", "nvidia-triton: r2", "native: r3"):
+        assert fragment in reason
+    warnings = warnings_in(caplog)
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == reason
+
+
+def test_all_rungs_fail_cuda_raises() -> None:
+    probe = FakeProbe({"nvidia-auto": fail("r1"), "nvidia-triton": fail("r2"), "native": fail("r3")})
+    with pytest.raises(RuntimeError) as info:
+        choose(gpu_env(), probe, device="cuda")
+    for fragment in ("nvidia-auto: r1", "nvidia-triton: r2", "native: r3"):
+        assert fragment in str(info.value)
+
+
+# silent and warning fallbacks
+
+
+def test_torch_missing_auto_silent(caplog: pytest.LogCaptureFixture) -> None:
+    env = gpu_env(torch_importable=False, gpu_available=False, torch_version=None)
+    with caplog.at_level(logging.DEBUG):
+        choice = choose(env, FakeProbe())
+    assert choice.fallback_reason == "no GPU backend usable: PyTorch is not installed"
+    assert warnings_in(caplog) == []
+
+
+def test_torch_missing_cuda_raises() -> None:
+    env = gpu_env(torch_importable=False, gpu_available=False, torch_version=None)
+    with pytest.raises(RuntimeError, match="PyTorch is not installed"):
+        choose(env, FakeProbe(), device="cuda")
+
+
+@pytest.mark.parametrize("text", [AMD_MISMATCH, NVIDIA_MISMATCH])
+def test_mismatch_auto_warns_once_with_fallback_reason(text: str, caplog: pytest.LogCaptureFixture) -> None:
+    probe = FakeProbe()
+    with caplog.at_level(logging.DEBUG):
+        choice = choose(gpu_env(gpu_available=False, mismatch_reason=text), probe)
+    assert choice.name == "cpu"
+    assert choice.fallback_reason is not None
+    assert text in choice.fallback_reason
+    warnings = warnings_in(caplog)
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == choice.fallback_reason
+    assert probe.calls == []
+
+
+@pytest.mark.parametrize("text", [AMD_MISMATCH, NVIDIA_MISMATCH])
+def test_mismatch_cuda_raises_with_text(text: str) -> None:
+    with pytest.raises(RuntimeError) as info:
+        choose(gpu_env(gpu_available=False, mismatch_reason=text), FakeProbe(), device="cuda")
+    assert text in str(info.value)
+
+
+def test_hidden_rocm_gpu_is_silent(caplog: pytest.LogCaptureFixture) -> None:
+    env = gpu_env(gpu_available=False, is_rocm=True, hip_version="7.16")
+    with caplog.at_level(logging.DEBUG):
+        choice = choose(env, FakeProbe())
+    assert choice.fallback_reason == "no GPU backend usable: no GPU visible to PyTorch"
+    assert warnings_in(caplog) == []
+
+
+def test_cpu_torch_without_device_node_is_silent(caplog: pytest.LogCaptureFixture) -> None:
+    env = gpu_env(gpu_available=False)
+    with caplog.at_level(logging.DEBUG):
+        choice = choose(env, FakeProbe())
+    assert choice.name == "cpu"
+    assert warnings_in(caplog) == []
+
+
+# memoisation and warning repetition
+
+
+def test_probe_runs_once_per_rung_but_warning_repeats(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def counting(requested: str, precision: str) -> ProbeResult:
+        calls.append((requested, precision))
+        return fail("nope")
+
+    monkeypatch.setattr(_backend, "_run_probe", counting)
+    env = gpu_env()
+    with caplog.at_level(logging.DEBUG):
+        for _ in range(2):
+            choice = select_backend(device="auto", n=100, k=10, gpu_threshold=1, env=env, gpu_rungs=default_rungs())
+            assert choice.name == "cpu"
+    assert len(calls) == 3  # nvidia-auto, nvidia-triton, native; the second call reuses the memo
+    assert len(warnings_in(caplog)) == 2
+
+
+def test_probe_propagates_exception_and_caches_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(requested: str, precision: str) -> ProbeResult:  # noqa: ARG001
+        msg = "out of memory"
+        raise MemoryError(msg)
+
+    monkeypatch.setattr(_backend, "_run_probe", boom)
+    with pytest.raises(MemoryError):
+        _backend.probe("native", "native", "fp32")
+    assert _backend._PROBE_CACHE == {}
+
+
+def test_cpu_and_below_threshold_never_detect(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden() -> EnvInfo:
+        msg = "detect_environment must not run"
+        raise AssertionError(msg)
+
+    probe = FakeProbe()
+    monkeypatch.setattr(_backend, "detect_environment", forbidden)
+    assert (
+        select_backend(device="cpu", n=100, k=10, gpu_threshold=1, gpu_rungs=default_rungs(probe_fn=probe)).name
+        == "cpu"
+    )
+    assert (
+        select_backend(device="auto", n=10, k=2, gpu_threshold=10**9, gpu_rungs=default_rungs(probe_fn=probe)).name
+        == "cpu"
+    )
+    assert probe.calls == []
+
+
+# fork hint
+
+
+def test_cpu_fit_info_has_no_hint() -> None:
+    x = np.random.default_rng(0).normal(size=(50, 8)).astype(np.float32)
+    x /= np.linalg.norm(x, axis=1, keepdims=True)
+    result = _backend.fit_model(
+        x,
+        k=3,
+        spherical=True,
+        nepochs=1.0,
+        seed=0,
+        max_points_per_centroid=None,
+        backend=BackendChoice("cpu", "cpu", None),
+    )
+    assert result.info["backend_hint"] is None
+
+
+@pytest.mark.parametrize(
+    ("is_rocm", "assignment_backend", "source", "expected"),
+    [
+        (True, "native", "faiss-cpu", HINT),
+        (False, "native", "faiss-cpu", None),
+        (True, "triton", "faiss-cpu", None),
+        (True, "native", "e-means-rocm", None),
+        (False, "triton", "e-means-rocm", None),
+    ],
+)
+def test_backend_hint_table(is_rocm: bool, assignment_backend: str, source: str, expected: str | None) -> None:
+    assert _backend_hint(is_rocm=is_rocm, assignment_backend=assignment_backend, emeans_source=source) == expected
+
+
+def test_fitter_info_line_carries_hint(
+    tmp_path: Path,
+    make_docs: Callable[..., list[Document]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    real = fitter.fit_model
+
+    def with_hint(*args: Any, **kwargs: Any) -> _backend.FitResult:
+        result = real(*args, **kwargs)
+        result.info["backend_hint"] = HINT
+        return result
+
+    monkeypatch.setattr(fitter, "fit_model", with_hint)
+    with caplog.at_level(logging.INFO):
+        stats = EmeansFitter(model_path=str(tmp_path / "m.npz"), k=3).run(documents=make_docs(40))["stats"]
+    infos = [r for r in caplog.records if r.levelname == "INFO" and r.name == fitter.__name__]
+    assert len(infos) == 1
+    assert infos[0].getMessage().endswith(HINT)
+    assert "backend_hint" not in stats

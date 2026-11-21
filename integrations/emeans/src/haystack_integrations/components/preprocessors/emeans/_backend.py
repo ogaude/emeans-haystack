@@ -41,6 +41,7 @@ class EnvInfo:
     hip_version: str | None
     cuda_version: str | None = None
     arch: str | None = None
+    mismatch_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -223,6 +224,49 @@ def default_rungs(probe_fn: ProbeFn | None = None) -> tuple[GpuRung, ...]:
     )
 
 
+def _device_nodes() -> tuple[bool, bool]:
+    """Return `(amd_node, nvidia_node)`: whether a GPU device node exists, checked without importing PyTorch."""
+    return (
+        os.path.exists("/dev/kfd"),
+        os.path.exists("/dev/nvidia0") or os.path.exists("/dev/nvidiactl"),
+    )
+
+
+def mismatch_reason(
+    *,
+    amd_node: bool,
+    nvidia_node: bool,
+    torch_version: str | None,
+    hip_version: str | None,
+    cuda_version: str | None,
+    gpu_available: bool,
+) -> str | None:
+    """
+    Explain why a GPU is present but PyTorch cannot use it because the installed build is the wrong one.
+
+    :param amd_node: Whether `/dev/kfd` exists.
+    :param nvidia_node: Whether an NVIDIA device node exists.
+    :param torch_version: Installed PyTorch version.
+    :param hip_version: `torch.version.hip` (`None` for builds without ROCm).
+    :param cuda_version: `torch.version.cuda` (`None` for builds without CUDA).
+    :param gpu_available: `torch.cuda.is_available()`.
+    :returns: The explanation, or `None` when there is no mismatch.
+    """
+    if gpu_available:
+        return None
+    if amd_node and hip_version is None:
+        return (
+            f"AMD GPU found (/dev/kfd) but PyTorch {torch_version} is not a ROCm build; "
+            "install the ROCm build of PyTorch and do not use the [gpu] extra"
+        )
+    if nvidia_node and cuda_version is None and hip_version is None:
+        return (
+            f"NVIDIA GPU found but PyTorch {torch_version} is a CPU-only build; "
+            "install a CUDA build of PyTorch, for example with the [gpu] extra"
+        )
+    return None
+
+
 def detect_environment() -> EnvInfo:
     """Inspect the environment; PyTorch is imported only when it is installed."""
     fork = detect_emeans_source() == "e-means-rocm"
@@ -248,6 +292,15 @@ def detect_environment() -> EnvInfo:
         else:
             major, minor = torch.cuda.get_device_capability(0)
             arch = f"sm_{major}{minor}"
+    amd_node, nvidia_node = _device_nodes()
+    mismatch = mismatch_reason(
+        amd_node=amd_node,
+        nvidia_node=nvidia_node,
+        torch_version=str(torch.__version__),
+        hip_version=hip_version,
+        cuda_version=torch.version.cuda,
+        gpu_available=gpu_available,
+    )
     return EnvInfo(
         torch_importable=True,
         gpu_available=gpu_available,
@@ -258,6 +311,7 @@ def detect_environment() -> EnvInfo:
         hip_version=hip_version,
         cuda_version=torch.version.cuda,
         arch=arch,
+        mismatch_reason=mismatch,
     )
 
 
@@ -290,8 +344,11 @@ def select_backend(
     if device == "auto" and n * k < gpu_threshold:
         return BackendChoice("cpu", "cpu", None)
     environment = env if env is not None else detect_environment()
+    warn = environment.mismatch_reason is not None
     if not environment.torch_importable:
         detail = "PyTorch is not installed"
+    elif environment.mismatch_reason is not None:
+        detail = environment.mismatch_reason
     elif not environment.gpu_available:
         detail = "no GPU visible to PyTorch"
     else:
@@ -303,10 +360,24 @@ def select_backend(
                 return BackendChoice(rung.name, environment.device_name or "cuda", None, requested=rung.requested)
             reasons.append(f"{rung.name}: {reason}")
         detail = "; ".join(reasons) or "no GPU backend registered"
+        warn = True
     if device == "cuda":
         msg = f"device='cuda' requested but no GPU backend usable: {detail}"
         raise RuntimeError(msg)
-    return BackendChoice("cpu", "cpu", f"no GPU backend usable: {detail}")
+    fallback_reason = f"no GPU backend usable: {detail}"
+    if warn:
+        logger.warning("{reason}", reason=fallback_reason)
+    return BackendChoice("cpu", "cpu", fallback_reason)
+
+
+_FORK_HINT = "(the e-means-rocm fork adds Triton kernels and BF16/FP16 on RX 9000 GPUs)"
+
+
+def _backend_hint(*, is_rocm: bool, assignment_backend: str, emeans_source: str) -> str | None:
+    """Return a one-line hint for AMD users running the native rung on upstream e-means, otherwise `None`."""
+    if is_rocm and assignment_backend == "native" and emeans_source == "faiss-cpu":
+        return _FORK_HINT
+    return None
 
 
 _BACKEND_NAMES = {"native": "gpu-pytorch", "triton": "gpu-triton", "cute": "gpu-cute"}
@@ -403,6 +474,7 @@ def fit_model(
         "alpha0": float(recipe["alpha0"]),
         "n_splits": int(em.n_splits),
         "imbalance": imbalance,
+        "backend_hint": None,
     }
     return FitResult(centroids=np.ascontiguousarray(centroids, dtype=np.float32), info=info)
 
@@ -475,6 +547,11 @@ def _fit_gpu(
             "alpha0": float(recipe["alpha0"]),
             "n_splits": int(em.n_splits),
             "imbalance": imbalance,
+            "backend_hint": _backend_hint(
+                is_rocm=torch.version.hip is not None,
+                assignment_backend=label,
+                emeans_source=detect_emeans_source(),
+            ),
         }
         return FitResult(centroids=result, info=info)
     finally:

@@ -269,12 +269,13 @@ class EmeansFitter:
         }
         logger.info(
             "Fitted e-means on the {backend} backend (device {device_name}, precision {precision}): k={k} on {n} "
-            "documents in {seconds:.2f}s",
+            "documents in {seconds:.2f}s{hint}",
             backend=info["backend"],
             device_name=info["device_name"],
             precision=info["precision_used"],
             k=n_clusters,
             n=n_usable,
             seconds=info["train_seconds"],
+            hint=f" {info['backend_hint']}" if info.get("backend_hint") else "",
         )
         return {"model_path": path, "stats": stats}
