@@ -2,7 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Example 4: fit e-means on a large corpus on a GPU (synthetic 768-d embeddings)."""
+"""
+Example 4: fit e-means on a large corpus on a GPU (synthetic 768-d embeddings).
+
+Run it from integrations/emeans in an env with a GPU build of PyTorch, for example
+`hatch run gpu:run ../../examples/04_large_corpus_gpu.py` (or `gpu-fork:run` with the e-means-rocm fork).
+It uses device="cuda", so it raises where no GPU backend is usable.
+"""
 
 # ruff: noqa: T201 (examples print their results)
 
@@ -43,6 +49,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
+    # Same folder as _shared.output_dir(); _shared is not imported because it needs sentence-transformers-haystack,
+    # which the gpu envs do not install.
     out = Path(__file__).parent / ".output"
     out.mkdir(exist_ok=True)
 
