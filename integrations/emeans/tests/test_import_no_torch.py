@@ -59,19 +59,47 @@ SCRIPT = textwrap.dedent(
     """
 )
 
+# With torch installed, haystack has usually imported it already, so neither `sys.modules` nor a meta-path blocker
+# can tell whether our code asks for it. Record every request for a torch module made through the import functions
+# instead; the CPU paths must make none.
 SCRIPT_UNBLOCKED = textwrap.dedent(
     """
-    import sys
+    import builtins
+    import importlib
+    import importlib.util
     import tempfile
     from pathlib import Path
 
     import numpy as np
-    from haystack import Document
+    from haystack import Document  # haystack itself probes for torch when it is imported, so it comes first
 
-    before = "torch" in sys.modules
+    ATTEMPTS = []
 
-    import numpy as np
-    from haystack import Document
+    def _is_torch(name):
+        return name == "torch" or name.startswith("torch.")
+
+    real_import_module = importlib.import_module
+    real_find_spec = importlib.util.find_spec
+    real_import = builtins.__import__
+
+    def recording_import_module(name, *args, **kwargs):
+        if _is_torch(name):
+            ATTEMPTS.append(("import_module", name))
+        return real_import_module(name, *args, **kwargs)
+
+    def recording_find_spec(name, *args, **kwargs):
+        if _is_torch(name):
+            ATTEMPTS.append(("find_spec", name))
+        return real_find_spec(name, *args, **kwargs)
+
+    def recording_import(name, *args, **kwargs):
+        if _is_torch(name):
+            ATTEMPTS.append(("import", name))
+        return real_import(name, *args, **kwargs)
+
+    importlib.import_module = recording_import_module
+    importlib.util.find_spec = recording_find_spec
+    builtins.__import__ = recording_import
 
     from haystack_integrations.components.preprocessors.emeans import EmeansDocumentClusterer, EmeansFitter
     from haystack_integrations.components.rankers.emeans import EmeansClusterRanker
@@ -95,7 +123,7 @@ SCRIPT_UNBLOCKED = textwrap.dedent(
         ranked = EmeansClusterRanker(model_path=path).run(documents=fresh)["documents"]
         assert len(ranked) == 2
 
-    assert "torch" not in sys.modules or before, "our code imported torch"
+    assert ATTEMPTS == [], ATTEMPTS
     """
 )
 
