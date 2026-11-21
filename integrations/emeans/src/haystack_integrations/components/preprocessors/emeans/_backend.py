@@ -263,15 +263,21 @@ def mismatch_reason(
     """
     if gpu_available:
         return None
-    if amd_node and hip_version is None:
+    if nvidia_node and not amd_node and hip_version is not None:
         return (
-            f"AMD GPU found (/dev/kfd) but PyTorch {torch_version} is not a ROCm build; "
-            "install the ROCm build of PyTorch and do not use the [gpu] extra"
+            f"NVIDIA GPU found but PyTorch {torch_version} is a ROCm build; "
+            "install a CUDA build of PyTorch, for example with the [gpu] extra"
         )
+    # NVIDIA first: an AMD APU or iGPU exposes /dev/kfd next to an NVIDIA dGPU even when ROCm does not support it.
     if nvidia_node and cuda_version is None and hip_version is None:
         return (
             f"NVIDIA GPU found but PyTorch {torch_version} is a CPU-only build; "
             "install a CUDA build of PyTorch, for example with the [gpu] extra"
+        )
+    if amd_node and hip_version is None and not (nvidia_node and cuda_version is not None):
+        return (
+            f"AMD GPU found (/dev/kfd) but PyTorch {torch_version} is not a ROCm build; "
+            "if this GPU is supported by ROCm, install the ROCm build of PyTorch and do not use the [gpu] extra"
         )
     return None
 

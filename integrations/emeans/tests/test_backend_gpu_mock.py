@@ -25,10 +25,14 @@ from haystack_integrations.components.preprocessors.emeans._backend import (
 
 AMD_MISMATCH = (
     "AMD GPU found (/dev/kfd) but PyTorch 2.15.0 is not a ROCm build; "
-    "install the ROCm build of PyTorch and do not use the [gpu] extra"
+    "if this GPU is supported by ROCm, install the ROCm build of PyTorch and do not use the [gpu] extra"
 )
 NVIDIA_MISMATCH = (
     "NVIDIA GPU found but PyTorch 2.15.0 is a CPU-only build; "
+    "install a CUDA build of PyTorch, for example with the [gpu] extra"
+)
+ROCM_ON_NVIDIA = (
+    "NVIDIA GPU found but PyTorch 2.15.0 is a ROCm build; "
     "install a CUDA build of PyTorch, for example with the [gpu] extra"
 )
 HINT = "(the e-means-rocm fork adds Triton kernels and BF16/FP16 on RX 9000 GPUs)"
@@ -132,6 +136,24 @@ def choose(env: EnvInfo, probe: FakeProbe, device: str = "auto") -> BackendChoic
     ],
 )
 def test_mismatch_reason_table(kwargs: dict[str, Any], expected: str | None) -> None:
+    assert mismatch_reason(torch_version="2.15.0", **kwargs) == expected
+
+
+def _nodes(*, amd: bool, nvidia: bool, hip: str | None, cuda: str | None) -> dict[str, Any]:
+    return {"amd_node": amd, "nvidia_node": nvidia, "hip_version": hip, "cuda_version": cuda, "gpu_available": False}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        (_nodes(amd=False, nvidia=True, hip="7.16", cuda=None), ROCM_ON_NVIDIA),  # ROCm torch on an NVIDIA machine
+        (_nodes(amd=True, nvidia=True, hip=None, cuda="12.8"), None),  # APU + NVIDIA, CUDA build: not a build issue
+        (_nodes(amd=True, nvidia=True, hip=None, cuda=None), NVIDIA_MISMATCH),  # APU + NVIDIA, CPU-only build
+        (_nodes(amd=True, nvidia=True, hip="7.16", cuda=None), None),  # both, ROCm build: possibly hidden on purpose
+        (_nodes(amd=True, nvidia=False, hip=None, cuda="12.8"), AMD_MISMATCH),  # CUDA build on an AMD-only machine
+    ],
+)
+def test_mismatch_reason_mixed_layouts(kwargs: dict[str, Any], expected: str | None) -> None:
     assert mismatch_reason(torch_version="2.15.0", **kwargs) == expected
 
 
