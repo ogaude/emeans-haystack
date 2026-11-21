@@ -402,6 +402,20 @@ def test_probe_propagates_exception_and_caches_nothing(monkeypatch: pytest.Monke
     assert _backend._PROBE_CACHE == {}
 
 
+def test_probe_memo_keeps_rungs_with_the_same_name_apart(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake(requested: str, precision: str) -> ProbeResult:
+        calls.append((requested, precision))
+        return ProbeResult(requested == "triton", requested, None)
+
+    monkeypatch.setattr(_backend, "_run_probe", fake)
+    assert _backend.probe("custom", "triton", "fp32").ok
+    assert not _backend.probe("custom", "native", "fp32").ok
+    assert _backend.probe("custom", "triton", "fp32").ok
+    assert calls == [("triton", "fp32"), ("native", "fp32")]
+
+
 # probe out of memory (SA-01)
 
 

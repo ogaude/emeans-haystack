@@ -105,7 +105,7 @@ class ProbeResult:
 
 ProbeFn = Callable[[str, str, str], ProbeResult]  # (rung name, requested assignment backend, precision)
 
-_PROBE_CACHE: dict[tuple[str, str], ProbeResult] = {}
+_PROBE_CACHE: dict[tuple[str, str, str], ProbeResult] = {}  # (rung name, requested, precision) -> outcome
 _PROBE_LOCK = threading.Lock()
 
 _PROBE_ROWS = 1024
@@ -160,14 +160,14 @@ def _run_probe(requested: str, precision: str) -> ProbeResult:
 
 def probe(rung_name: str, requested: str, precision: str) -> ProbeResult:
     """
-    Run the tiny training probe for a rung once per process and precision, and remember the outcome.
+    Run the tiny training probe once per process for each rung, assignment backend and precision; remember it.
 
     :param rung_name: Name of the rung being probed.
     :param requested: The e-means `assignment_backend` to probe.
     :param precision: `"fp32"`, `"bf16"` or `"fp16"`.
     :raises torch.OutOfMemoryError: If the GPU is out of memory; this is never remembered.
     """
-    key = (rung_name, precision)
+    key = (rung_name, requested, precision)
     with _PROBE_LOCK:
         cached = _PROBE_CACHE.get(key)
         if cached is not None:
