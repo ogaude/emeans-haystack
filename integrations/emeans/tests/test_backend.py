@@ -226,6 +226,35 @@ def test_detect_environment_gpu_init_error_falls_back_with_warning(
     assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
 
 
+def _hidden_rocm_torch() -> types.SimpleNamespace:
+    return types.SimpleNamespace(
+        __version__="2.14.0+rocm10.1.0",
+        version=types.SimpleNamespace(hip="10.1", cuda=None),
+        cuda=types.SimpleNamespace(is_available=lambda: False),
+    )
+
+
+def test_detect_environment_present_gpu_hidden_from_matching_torch(monkeypatch: pytest.MonkeyPatch) -> None:
+    _pretend_torch_installed(monkeypatch, _hidden_rocm_torch())
+    monkeypatch.setattr(_backend, "_device_nodes", lambda: (True, False))
+    for name in ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising=False)
+    env = detect_environment()
+    assert env.mismatch_reason is not None
+    assert "ROCm build" in env.mismatch_reason
+    assert "sees no GPU" in env.mismatch_reason
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "")
+    env = detect_environment()
+    assert env.mismatch_reason is not None
+    assert "ROCR_VISIBLE_DEVICES=''" in env.mismatch_reason
+
+
+def test_detect_environment_no_device_node_stays_silent(monkeypatch: pytest.MonkeyPatch) -> None:
+    _pretend_torch_installed(monkeypatch, _hidden_rocm_torch())
+    monkeypatch.setattr(_backend, "_device_nodes", lambda: (False, False))
+    assert detect_environment().mismatch_reason is None
+
+
 def test_fit_model_info_plain_types() -> None:
     info = fit().info
     assert info["backend"] == "cpu"

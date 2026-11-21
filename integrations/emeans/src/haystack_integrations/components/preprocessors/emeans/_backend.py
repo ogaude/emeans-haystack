@@ -11,7 +11,7 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -283,6 +283,54 @@ def mismatch_reason(
     return None
 
 
+def _visible_devices_clause(name: str, value: str) -> str:
+    return f"{name}={value!r} is set and may hide it; use device='cpu' to run on CPU without this warning"
+
+
+def hidden_gpu_reason(
+    *,
+    amd_node: bool,
+    nvidia_node: bool,
+    torch_version: str | None,
+    hip_version: str | None,
+    cuda_version: str | None,
+    gpu_available: bool,
+    environ: Mapping[str, str],
+) -> str | None:
+    """
+    Explain why a GPU is present and PyTorch has the matching build but still sees no GPU.
+
+    :param amd_node: Whether `/dev/kfd` exists.
+    :param nvidia_node: Whether an NVIDIA device node exists.
+    :param torch_version: Installed PyTorch version.
+    :param hip_version: `torch.version.hip` (`None` for builds without ROCm).
+    :param cuda_version: `torch.version.cuda` (`None` for builds without CUDA).
+    :param gpu_available: `torch.cuda.is_available()`.
+    :param environ: Process environment, scanned for `*_VISIBLE_DEVICES` variables relevant to the vendor.
+    :returns: The explanation, or `None` when PyTorch sees a GPU or the build does not match the device.
+    """
+    if gpu_available:
+        return None
+    if amd_node and hip_version is not None:
+        text = f"AMD GPU found (/dev/kfd) and PyTorch {torch_version} is a ROCm build, but PyTorch sees no GPU; "
+        for name in ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            if name in environ:
+                return text + _visible_devices_clause(name, environ[name])
+        return text + (
+            "check that the amdgpu driver is loaded and that this user can open /dev/kfd and /dev/dri "
+            "(render and video groups)"
+        )
+    if nvidia_node and cuda_version is not None:
+        text = f"NVIDIA GPU found and PyTorch {torch_version} is a CUDA {cuda_version} build, but PyTorch sees no GPU; "
+        if "CUDA_VISIBLE_DEVICES" in environ:
+            return text + _visible_devices_clause("CUDA_VISIBLE_DEVICES", environ["CUDA_VISIBLE_DEVICES"])
+        return text + (
+            f"check that the NVIDIA driver is loaded and supports CUDA {cuda_version}, "
+            "and that this user can open /dev/nvidia*"
+        )
+    return None
+
+
 def detect_environment() -> EnvInfo:
     """Inspect the environment; PyTorch is imported only when it is installed."""
     fork = detect_emeans_source() == "e-means-rocm"
@@ -318,14 +366,15 @@ def detect_environment() -> EnvInfo:
         gpu_available, device_name, arch = False, None, None
         init_error = f"PyTorch could not initialise the GPU: {type(error).__name__}: {error}"
     amd_node, nvidia_node = _device_nodes()
-    mismatch = init_error or mismatch_reason(
-        amd_node=amd_node,
-        nvidia_node=nvidia_node,
-        torch_version=str(torch.__version__),
-        hip_version=hip_version,
-        cuda_version=torch.version.cuda,
-        gpu_available=gpu_available,
-    )
+    probe_args = {
+        "amd_node": amd_node,
+        "nvidia_node": nvidia_node,
+        "torch_version": str(torch.__version__),
+        "hip_version": hip_version,
+        "cuda_version": torch.version.cuda,
+        "gpu_available": gpu_available,
+    }
+    mismatch = init_error or mismatch_reason(**probe_args) or hidden_gpu_reason(**probe_args, environ=os.environ)
     return EnvInfo(
         torch_importable=True,
         gpu_available=gpu_available,

@@ -20,6 +20,7 @@ from haystack_integrations.components.preprocessors.emeans._backend import (
     ProbeResult,
     _backend_hint,
     default_rungs,
+    hidden_gpu_reason,
     mismatch_reason,
     resolve_precision,
     select_backend,
@@ -37,6 +38,22 @@ ROCM_ON_NVIDIA = (
     "NVIDIA GPU found but PyTorch 2.15.0 is a ROCm build; "
     "install a CUDA build of PyTorch, for example with the [gpu] extra"
 )
+AMD_DRIVER_CLAUSE = (
+    "check that the amdgpu driver is loaded and that this user can open /dev/kfd and /dev/dri (render and video groups)"
+)
+AMD_BASE = "AMD GPU found (/dev/kfd) and PyTorch 2.15.0 is a ROCm build, but PyTorch sees no GPU; "
+AMD_HIDDEN = AMD_BASE + AMD_DRIVER_CLAUSE
+NVIDIA_BASE = "NVIDIA GPU found and PyTorch 2.15.0 is a CUDA 12.8 build, but PyTorch sees no GPU; "
+NVIDIA_HIDDEN = (
+    NVIDIA_BASE
+    + "check that the NVIDIA driver is loaded and supports CUDA 12.8, and that this user can open /dev/nvidia*"
+)
+
+
+def visible_clause(name: str, value: str) -> str:
+    return f"{name}={value!r} is set and may hide it; use device='cpu' to run on CPU without this warning"
+
+
 HINT = "(the e-means-rocm fork adds Triton kernels and BF16/FP16 on RX 9000 GPUs)"
 
 
@@ -173,6 +190,40 @@ def test_mismatch_reason_text_names_fix() -> None:
         assert fragment in text
 
 
+# hidden_gpu_reason table (SA-02)
+
+_AMD = {"amd_node": True, "nvidia_node": False, "hip_version": "7.16", "cuda_version": None, "gpu_available": False}
+_NVIDIA = {"amd_node": False, "nvidia_node": True, "hip_version": None, "cuda_version": "12.8", "gpu_available": False}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "environ", "expected"),
+    [
+        (_AMD, {}, AMD_HIDDEN),
+        *[
+            (_AMD, {name: ""}, AMD_BASE + visible_clause(name, ""))
+            for name in ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+        ],
+        (_NVIDIA, {}, NVIDIA_HIDDEN),
+        (_NVIDIA, {"CUDA_VISIBLE_DEVICES": "-1"}, NVIDIA_BASE + visible_clause("CUDA_VISIBLE_DEVICES", "-1")),
+        (_NVIDIA, {"HIP_VISIBLE_DEVICES": ""}, NVIDIA_HIDDEN),
+        ({**_AMD, "gpu_available": True}, {}, None),
+        ({**_NVIDIA, "gpu_available": True}, {}, None),
+        ({**_AMD, "amd_node": False}, {}, None),
+        ({**_AMD, "hip_version": None}, {}, None),
+        ({**_NVIDIA, "cuda_version": None}, {}, None),
+    ],
+)
+def test_hidden_gpu_reason_table(kwargs: dict[str, Any], environ: dict[str, str], expected: str | None) -> None:
+    assert hidden_gpu_reason(torch_version="2.15.0", environ=environ, **kwargs) == expected
+
+
+def test_hidden_gpu_reason_escapes_control_characters() -> None:
+    text = hidden_gpu_reason(torch_version="2.15.0", environ={"ROCR_VISIBLE_DEVICES": "0\nFAKE"}, **_AMD)
+    assert text is not None
+    assert "\n" not in text
+
+
 # ladder
 
 
@@ -284,7 +335,25 @@ def test_mismatch_cuda_raises_with_text(text: str) -> None:
     assert text in str(info.value)
 
 
-def test_hidden_rocm_gpu_is_silent(caplog: pytest.LogCaptureFixture) -> None:
+def test_hidden_gpu_auto_warns_once_with_reason(caplog: pytest.LogCaptureFixture) -> None:
+    env = gpu_env(gpu_available=False, is_rocm=True, hip_version="7.16", mismatch_reason=AMD_HIDDEN)
+    with caplog.at_level(logging.DEBUG):
+        choice = choose(env, FakeProbe())
+    assert choice.name == "cpu"
+    assert choice.fallback_reason == f"no GPU backend usable: {AMD_HIDDEN}"
+    warnings = warnings_in(caplog)
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == choice.fallback_reason
+
+
+def test_hidden_gpu_cuda_raises_with_reason() -> None:
+    env = gpu_env(gpu_available=False, is_rocm=True, hip_version="7.16", mismatch_reason=AMD_HIDDEN)
+    with pytest.raises(RuntimeError) as info:
+        choose(env, FakeProbe(), device="cuda")
+    assert AMD_HIDDEN in str(info.value)
+
+
+def test_rocm_torch_without_reason_is_silent(caplog: pytest.LogCaptureFixture) -> None:
     env = gpu_env(gpu_available=False, is_rocm=True, hip_version="7.16")
     with caplog.at_level(logging.DEBUG):
         choice = choose(env, FakeProbe())
