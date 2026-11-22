@@ -1,0 +1,55 @@
+# Benchmark harness. Not a package: nothing here is published or installed.
+# The emeans-haystack package is installed non-editable from ../integrations/emeans;
+# run `hatch env prune` after editing the package so the benchmark env picks the change up.
+
+[tool.hatch.envs.bench-cpu]
+detached = true
+installer = "uv"
+dependencies = [
+    "emeans-haystack @ {root:parent:uri}/integrations/emeans",
+    "scikit-learn",
+    "scipy",
+    "pytest",
+    "ruff",
+    "mypy",
+]
+env-vars = { OMP_NUM_THREADS = "{env:BENCH_THREADS:10}" }
+
+[tool.hatch.envs.bench-cpu.scripts]
+run = "python {args}"
+test = "pytest {args:tests}"
+lint = "ruff check . && ruff format --check ."
+fmt = "ruff check --fix . ; ruff format ."
+types = "mypy {args:.}"
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = ["gpu: needs a GPU; local only"]
+
+[tool.mypy]
+install_types = true
+non_interactive = true
+check_untyped_defs = true
+disallow_incomplete_defs = true
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "A", "ANN", "ARG", "B", "C",
+    "D102", "D103", "D205", "D209", "D213", "D417", "D419",
+    "DTZ", "E", "EM", "F", "I", "ICN", "ISC", "N",
+    "PLC", "PLE", "PLR", "PLW", "Q", "RUF", "S", "T", "TID", "UP", "W", "YTT",
+]
+ignore = [
+    "B027", "B008", "S105", "S106", "S107",
+    "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR0917",
+    "ANN401",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*" = ["PLR2004", "S101", "S603", "D", "ANN"]
