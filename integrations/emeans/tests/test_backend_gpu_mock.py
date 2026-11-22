@@ -8,7 +8,7 @@ import threading
 import types
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import pytest
@@ -26,6 +26,7 @@ from haystack_integrations.components.preprocessors.emeans._backend import (
     resolve_precision,
     select_backend,
 )
+from haystack_integrations.components.preprocessors.emeans._model import load_model
 
 AMD_MISMATCH = (
     "AMD GPU found (/dev/kfd) but PyTorch 2.15.0 is not a ROCm build; "
@@ -696,3 +697,249 @@ def test_resolve_precision_native_rung_is_fp32(precision: str, warns: bool) -> N
     assert used == "fp32"
     assert (warning is not None) is warns
     assert fake.calls == []
+
+
+# GPU memory pre-flight
+
+GIB = 2**30
+GPU_CHOICE = BackendChoice("nvidia-triton", "Fake GPU", None, requested="triton")
+PREFLIGHT_STATS_KEYS = {
+    "k", "d", "n_documents", "n_skipped", "n_train", "spherical", "backend", "assignment_backend", "device_name",
+    "precision_used", "fallback_reason", "memory_estimate_bytes", "emeans_source", "faiss_version", "nepochs",
+    "batch_size", "alpha0", "n_splits", "imbalance", "train_seconds",
+}  # fmt: skip
+
+
+class FakeTensor:
+    def __init__(self, array: np.ndarray) -> None:
+        self.array = array
+
+    def to(self, _device: str) -> "FakeTensor":
+        return self
+
+    def half(self) -> "FakeTensor":
+        return self
+
+    def detach(self) -> "FakeTensor":
+        return self
+
+    def float(self) -> "FakeTensor":
+        return self
+
+    def cpu(self) -> "FakeTensor":
+        return self
+
+    def numpy(self) -> np.ndarray:
+        return self.array
+
+
+class FakeEngine:
+    instances: ClassVar[list["FakeEngine"]] = []
+
+    def __init__(self, d: int, k: int, **kwargs: Any) -> None:
+        self.d, self.k, self.kwargs = d, k, kwargs
+        self.trained = False
+        self.n_splits = 0
+        self.iteration_stats: list[dict[str, Any]] = []
+        self.recipe = {
+            "assignment_backend": "triton",
+            "representation": "torch.float32",
+            "nepochs": 1.0,
+            "batch_size": 64,
+            "alpha0": 0.5,
+        }
+        FakeEngine.instances.append(self)
+
+    def train(self, _x: FakeTensor) -> tuple[FakeTensor, None]:
+        self.trained = True
+        return FakeTensor(np.random.default_rng(0).normal(size=(self.k, self.d)).astype(np.float32)), None
+
+
+class FakeGpu:
+    """A fake torch plus a fake faiss.contrib.e_means, installed into sys.modules."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, free: int = GIB, estimate: Any = GIB) -> None:
+        FakeEngine.instances = []
+        self.free = free
+        self.estimate_calls: list[tuple[Any, ...]] = []
+        self.mem_get_info_calls = 0
+        self.from_numpy_calls = 0
+        self.float32, self.float16, self.bfloat16 = "float32", "float16", "bfloat16"
+        gpu = self
+
+        def mem_get_info() -> tuple[int, int]:
+            gpu.mem_get_info_calls += 1
+            return gpu.free, 16 * GIB
+
+        def from_numpy(array: np.ndarray) -> FakeTensor:
+            gpu.from_numpy_calls += 1
+            return FakeTensor(array)
+
+        self.torch = types.SimpleNamespace(
+            float32="float32",
+            float16="float16",
+            bfloat16="bfloat16",
+            from_numpy=from_numpy,
+            cuda=types.SimpleNamespace(mem_get_info=mem_get_info, synchronize=lambda: None, empty_cache=lambda: None),
+            version=types.SimpleNamespace(hip=None, cuda="12.8"),
+            OutOfMemoryError=FakeOutOfMemoryError,
+            are_deterministic_algorithms_enabled=lambda: False,
+        )
+        self.e_means = types.SimpleNamespace(QuantizedEmeans=FakeEngine, Emeans=FakeEngine)
+        if estimate is not None:
+
+            def memory_estimate(*args: Any, **kwargs: Any) -> int:
+                gpu.estimate_calls.append((*args, kwargs))
+                if isinstance(estimate, Exception):
+                    raise estimate
+                return int(estimate)
+
+            self.e_means.memory_estimate = memory_estimate
+        monkeypatch.setitem(sys.modules, "torch", self.torch)
+        monkeypatch.setitem(sys.modules, "faiss.contrib.e_means", self.e_means)
+        monkeypatch.setattr(_backend, "detect_emeans_source", lambda: "e-means-rocm")
+
+
+def run_fit(
+    n: int = 40, d: int = 8, *, allow_cpu_fallback: bool, precision: str = "fp32", mpc: int | None = None
+) -> _backend.FitResult:
+    x = np.random.default_rng(0).normal(size=(n, d)).astype(np.float32)
+    x /= np.linalg.norm(x, axis=1, keepdims=True)
+    return _backend.fit_model(
+        x,
+        k=3,
+        spherical=True,
+        nepochs=1.0,
+        seed=0,
+        max_points_per_centroid=mpc,
+        backend=GPU_CHOICE,
+        precision=precision,
+        allow_cpu_fallback=allow_cpu_fallback,
+    )
+
+
+def test_preflight_auto_over_budget_falls_back_to_cpu(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    gpu = FakeGpu(monkeypatch, free=1 * GIB, estimate=3 * GIB)
+    with caplog.at_level(logging.DEBUG):
+        result = run_fit(allow_cpu_fallback=True)
+    info = result.info
+    assert info["backend"] == "cpu"
+    assert info["device_name"] == "cpu"
+    assert info["precision_used"] == "fp32"
+    assert info["memory_estimate_bytes"] == 3 * GIB
+    assert "3.00 GiB" in info["fallback_reason"]
+    assert "1.00 GiB" in info["fallback_reason"]
+    warnings = warnings_in(caplog)
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == info["fallback_reason"]
+    assert not any(engine.trained for engine in FakeEngine.instances)
+    assert gpu.from_numpy_calls == 0
+    assert result.centroids.shape == (3, 8)
+    assert result.centroids.dtype == np.float32
+
+
+def test_preflight_auto_within_budget_runs_on_gpu(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    gpu = FakeGpu(monkeypatch, free=2 * GIB, estimate=GIB)
+    with caplog.at_level(logging.DEBUG):
+        info = run_fit(allow_cpu_fallback=True).info
+    assert info["backend"] == "gpu-triton"
+    assert info["fallback_reason"] is None
+    assert info["memory_estimate_bytes"] == GIB
+    assert gpu.from_numpy_calls == 1
+    assert warnings_in(caplog) == []
+
+
+def test_preflight_cuda_only_logs(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    gpu = FakeGpu(monkeypatch, free=1 * GIB, estimate=3 * GIB)
+    with caplog.at_level(logging.DEBUG):
+        info = run_fit(allow_cpu_fallback=False).info
+    assert info["backend"] == "gpu-triton"
+    assert info["memory_estimate_bytes"] == 3 * GIB
+    assert FakeEngine.instances[0].trained
+    assert gpu.from_numpy_calls == 1
+    assert warnings_in(caplog) == []
+    infos = [r for r in caplog.records if r.levelname == "INFO"]
+    assert len(infos) == 1
+    assert "3.00 GiB" in infos[0].getMessage()
+
+
+def test_preflight_upstream_without_memory_estimate(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    gpu = FakeGpu(monkeypatch, free=1, estimate=None)
+    with caplog.at_level(logging.DEBUG):
+        info = run_fit(allow_cpu_fallback=True).info
+    assert info["backend"] == "gpu-triton"
+    assert info["memory_estimate_bytes"] is None
+    assert gpu.mem_get_info_calls == 0
+    assert warnings_in(caplog) == []
+
+
+def test_preflight_skipped_when_training_on_a_subset(monkeypatch: pytest.MonkeyPatch) -> None:
+    gpu = FakeGpu(monkeypatch, free=1, estimate=3 * GIB)
+    info = run_fit(n=40, allow_cpu_fallback=True, mpc=2).info  # 2 points per centroid * k=3 < 40
+    assert gpu.estimate_calls == []
+    assert info["memory_estimate_bytes"] is None
+    assert info["backend"] == "gpu-triton"
+
+
+def test_preflight_no_subsampling_still_estimates(monkeypatch: pytest.MonkeyPatch) -> None:
+    gpu = FakeGpu(monkeypatch, free=2 * GIB, estimate=GIB)
+    info = run_fit(n=40, allow_cpu_fallback=True, mpc=1000).info
+    assert len(gpu.estimate_calls) == 1
+    assert info["memory_estimate_bytes"] == GIB
+
+
+def test_preflight_estimate_error_is_ignored(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    FakeGpu(monkeypatch, free=1, estimate=RuntimeError("unsupported representation"))
+    with caplog.at_level(logging.DEBUG):
+        info = run_fit(allow_cpu_fallback=True).info
+    assert info["backend"] == "gpu-triton"
+    assert info["memory_estimate_bytes"] is None
+    assert warnings_in(caplog) == []
+
+
+def test_preflight_estimate_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    gpu = FakeGpu(monkeypatch, free=2 * GIB, estimate=GIB)
+    run_fit(n=40, allow_cpu_fallback=True)
+    model, n, dtype, device, kwargs = gpu.estimate_calls[0]
+    assert model is FakeEngine.instances[0]
+    assert (n, dtype, device, kwargs) == (40, "float32", "cuda", {})
+    monkeypatch.setattr(_backend, "probe", lambda *_a, **_k: ProbeResult(True, "triton", None))
+    run_fit(n=40, allow_cpu_fallback=True, precision="fp16")
+    assert gpu.estimate_calls[1][2] == "float16"
+
+
+def test_preflight_fitter_reports_cpu_fallback(
+    tmp_path: Path, make_docs: Callable[..., list[Document]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeGpu(monkeypatch, free=1 * GIB, estimate=3 * GIB)
+    monkeypatch.setattr(fitter, "select_backend", lambda **_kwargs: GPU_CHOICE)
+    path = tmp_path / "m.npz"
+    stats = EmeansFitter(device="auto", k=3, model_path=str(path)).run(documents=make_docs(40))["stats"]
+    assert stats["backend"] == "cpu"
+    assert "GiB" in stats["fallback_reason"]
+    assert stats["memory_estimate_bytes"] == 3 * GIB
+    assert set(stats) == PREFLIGHT_STATS_KEYS
+    assert path.exists()
+    assert load_model(str(path)).centroids.shape == (3, 16)
+
+
+def test_cpu_fit_info_memory_and_fallback_keys() -> None:
+    x = np.random.default_rng(0).normal(size=(50, 8)).astype(np.float32)
+    x /= np.linalg.norm(x, axis=1, keepdims=True)
+    info = _backend.fit_model(
+        x,
+        k=3,
+        spherical=True,
+        nepochs=1.0,
+        seed=0,
+        max_points_per_centroid=None,
+        backend=BackendChoice("cpu", "cpu", "some reason"),
+    ).info
+    assert info["memory_estimate_bytes"] is None
+    assert info["fallback_reason"] == "some reason"

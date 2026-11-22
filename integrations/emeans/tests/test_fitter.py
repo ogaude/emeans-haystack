@@ -39,7 +39,7 @@ STATS_TYPES: dict[str, type] = {
     "imbalance": float,
     "train_seconds": float,
 }
-STATS_KEYS = {*STATS_TYPES, "fallback_reason"}
+STATS_KEYS = {*STATS_TYPES, "fallback_reason", "memory_estimate_bytes"}
 
 
 def warnings_in(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -158,10 +158,11 @@ class TestStats:
     def test_keys_and_types(self, tmp_path: Path, make_docs: MakeDocs) -> None:
         stats = make_fitter(tmp_path).run(documents=make_docs(50))["stats"]
         assert set(stats) == STATS_KEYS
-        assert len(stats) == 19
+        assert len(stats) == 20
         for key, expected in STATS_TYPES.items():
             assert type(stats[key]) is expected, key
         assert stats["fallback_reason"] is None
+        assert stats["memory_estimate_bytes"] is None
         assert stats["backend"] == "cpu"
         assert stats["device_name"] == "cpu"
         assert stats["precision_used"] == "fp32"

@@ -220,6 +220,7 @@ class EmeansFitter:
             backend=backend,
             precision=self.precision,
             deterministic=self.deterministic,
+            allow_cpu_fallback=self.device == "auto",
         )
         info = fit.info
         # The GPU engine does not check its data for NaN or infinity, and NaN passes every norm comparison below.
@@ -271,7 +272,8 @@ class EmeansFitter:
             "assignment_backend": info["assignment_backend"],
             "device_name": info["device_name"],
             "precision_used": info["precision_used"],
-            "fallback_reason": backend.fallback_reason,
+            "fallback_reason": info["fallback_reason"],
+            "memory_estimate_bytes": info["memory_estimate_bytes"],
             "emeans_source": info["emeans_source"],
             "faiss_version": info["faiss_version"],
             "nepochs": info["nepochs"],

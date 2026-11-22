@@ -552,6 +552,7 @@ def fit_model(
     backend: BackendChoice,
     precision: str = "fp32",
     deterministic: bool = False,
+    allow_cpu_fallback: bool = False,
 ) -> FitResult:
     """
     Train e-means on `x` and return the centroids with a report of what ran.
@@ -566,6 +567,8 @@ def fit_model(
     :param precision: Requested precision. The CPU backend always runs FP32 and warns once for `bf16` or `fp16`.
     :param deterministic: Request deterministic algorithms on the GPU; CPU training is deterministic already.
         The setting is process-wide while the fit trains, so GPU work in other threads runs with it too.
+    :param allow_cpu_fallback: With True, a GPU fit whose memory estimate exceeds free GPU memory runs on the CPU
+        backend instead; the fitter passes True for `device="auto"`.
     """
     faiss_import.check()
     if backend.requested is not None:
@@ -579,7 +582,31 @@ def fit_model(
             backend=backend,
             precision=precision,
             deterministic=deterministic,
+            allow_cpu_fallback=allow_cpu_fallback,
         )
+    return _fit_cpu(
+        x,
+        k=k,
+        spherical=spherical,
+        nepochs=nepochs,
+        seed=seed,
+        max_points_per_centroid=max_points_per_centroid,
+        backend=backend,
+        precision=precision,
+    )
+
+
+def _fit_cpu(
+    x: np.ndarray,
+    *,
+    k: int,
+    spherical: bool,
+    nepochs: float,
+    seed: int,
+    max_points_per_centroid: int | None,
+    backend: BackendChoice,
+    precision: str,
+) -> FitResult:
     if precision in ("bf16", "fp16"):
         logger.warning("precision '{precision}' is not supported on the CPU backend; using fp32", precision=precision)
     n, d = x.shape
@@ -614,6 +641,8 @@ def fit_model(
         "n_splits": int(em.n_splits),
         "imbalance": imbalance,
         "backend_hint": None,
+        "memory_estimate_bytes": None,
+        "fallback_reason": backend.fallback_reason,
     }
     return FitResult(centroids=np.ascontiguousarray(centroids, dtype=np.float32), info=info)
 
@@ -656,6 +685,41 @@ def _n_train(n: int, k: int, max_points_per_centroid: int | None) -> int:
     return int(max_points_per_centroid * k if max_points_per_centroid and n > max_points_per_centroid * k else n)
 
 
+class _FallbackToCpu(Exception):  # noqa: N818
+    """Raised inside `_fit_gpu` to leave the GPU block, release its memory, and fit on the CPU instead."""
+
+
+def _gib(size: int) -> str:
+    return f"{size / 2**30:.2f} GiB"
+
+
+def _memory_preflight(
+    e_means: Any, torch: Any, em: Any, *, n: int, dtype: Any, subsampled: bool
+) -> tuple[int | None, int | None]:
+    """
+    Ask e-means how much GPU memory training needs and how much is free.
+
+    :returns: `(estimate, free)` in bytes, or `(None, None)` when e-means has no `memory_estimate` (upstream
+        faiss), when training runs on a subset the estimate does not cover, or when the estimate fails: the
+        pre-flight never breaks a fit that would have run.
+    """
+    estimate_fn = getattr(e_means, "memory_estimate", None)
+    if estimate_fn is None:
+        return None, None
+    if subsampled:
+        logger.debug("GPU memory estimate skipped: it does not cover the max_points_per_centroid subset copy")
+        return None, None
+    try:
+        # include_input stays at its default (True): the host-to-GPU copy of the rows has not happened yet.
+        # The fp16 path briefly holds the float32 copy plus the half copy, which the estimate does not count.
+        estimate = int(estimate_fn(em, n, dtype, "cuda"))
+        free = int(torch.cuda.mem_get_info()[0])
+    except Exception as error:
+        logger.debug("GPU memory estimate unavailable: {error}", error=error)
+        return None, None
+    return estimate, free
+
+
 def _fit_gpu(
     x: np.ndarray,
     *,
@@ -667,6 +731,7 @@ def _fit_gpu(
     backend: BackendChoice,
     precision: str,
     deterministic: bool,
+    allow_cpu_fallback: bool = False,
 ) -> FitResult:
     torch = importlib.import_module("torch")
     e_means = importlib.import_module("faiss.contrib.e_means")
@@ -681,6 +746,8 @@ def _fit_gpu(
     x_gpu = None
     em = None
     centroids = None
+    fallback_reason: str | None = None
+    estimate: int | None = None
     try:
         engine = e_means.QuantizedEmeans if train_precision == "fp32" else e_means.Emeans
         extra: dict[str, Any] = {"quantizer": None} if train_precision == "fp32" else {}
@@ -695,6 +762,35 @@ def _fit_gpu(
             assignment_backend=backend.requested,
             **extra,
         )
+        # bf16 runs pass float32 rows to an automatic Emeans, which memory_estimate costs as the BF16 cast.
+        estimate, free = _memory_preflight(
+            e_means,
+            torch,
+            em,
+            n=n,
+            dtype=torch.float16 if train_precision == "fp16" else torch.float32,
+            subsampled=_n_train(n, k, max_points_per_centroid) < n,
+        )
+        if estimate is not None and free is not None and estimate > free:
+            if allow_cpu_fallback:
+                fallback_reason = (
+                    f"GPU memory estimate for training ({_gib(estimate)}) exceeds free GPU memory "
+                    f"({_gib(free)}); using the CPU backend"
+                )
+                logger.warning("{reason}", reason=fallback_reason)
+            else:
+                logger.info(
+                    "GPU memory estimate for training ({estimate}) exceeds free GPU memory ({free}); "
+                    "training on the GPU anyway because device='cuda'",
+                    estimate=_gib(estimate),
+                    free=_gib(free),
+                )
+        elif estimate is not None and free is not None:
+            logger.debug(
+                "GPU memory estimate for training {estimate}, free {free}", estimate=_gib(estimate), free=_gib(free)
+            )
+        if fallback_reason is not None:
+            raise _FallbackToCpu
         x_gpu = torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32)).to("cuda")
         if train_precision == "fp16":
             x_gpu = x_gpu.half()
@@ -731,12 +827,29 @@ def _fit_gpu(
                 assignment_backend=label,
                 emeans_source=detect_emeans_source(),
             ),
+            "memory_estimate_bytes": estimate,
+            "fallback_reason": backend.fallback_reason,
         }
         return FitResult(centroids=result, info=info)
+    except _FallbackToCpu:
+        pass
     finally:
         # Drop every GPU tensor before empty_cache(), or the centroids' memory stays allocated.
         del x_gpu, em, centroids
         torch.cuda.empty_cache()
+    # The GPU memory is released by now, so the CPU fit does not compete with the dropped engine for it.
+    fit = _fit_cpu(
+        x,
+        k=k,
+        spherical=spherical,
+        nepochs=nepochs,
+        seed=seed,
+        max_points_per_centroid=max_points_per_centroid,
+        backend=BackendChoice("cpu", "cpu", fallback_reason),
+        precision="fp32",
+    )
+    fit.info["memory_estimate_bytes"] = estimate
+    return fit
 
 
 class _CpuAssigner:
