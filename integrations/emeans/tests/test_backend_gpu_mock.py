@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib
 import logging
 import sys
 import threading
@@ -759,6 +760,8 @@ class FakeGpu:
     """A fake torch plus a fake faiss.contrib.e_means, installed into sys.modules."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, *, free: int = GIB, estimate: Any = GIB) -> None:
+        # The CPU fallback imports e-means submodules lazily; load them before the fake package shadows the real one.
+        importlib.import_module("faiss.contrib.e_means.e_means_spherical")
         FakeEngine.instances = []
         self.free = free
         self.estimate_calls: list[tuple[Any, ...]] = []
