@@ -241,3 +241,44 @@ def test_clusterer_auto_above_threshold_uses_gpu(
     monkeypatch.setattr(_backend._GpuAssigner, "assign", _spy)
     EmeansDocumentClusterer(model_path=model, device="auto", gpu_threshold=1).run(documents=docs)
     assert len(calls) >= 1
+
+
+def _has_memory_estimate() -> bool:
+    return hasattr(importlib.import_module("faiss.contrib.e_means"), "memory_estimate")
+
+
+def test_memory_estimate_recorded_on_fork(tmp_path: Path, make_docs: MakeDocs) -> None:
+    if not _has_memory_estimate():
+        pytest.skip("needs an e-means with memory_estimate (the e-means-rocm fork)")
+    stats = _fitter(tmp_path).run(documents=make_docs(2000, d=64, n_clusters=16))["stats"]
+    assert stats["backend"].startswith("gpu-")
+    assert isinstance(stats["memory_estimate_bytes"], int)
+    assert stats["memory_estimate_bytes"] > 0
+    assert stats["fallback_reason"] is None
+
+
+def test_auto_falls_back_to_cpu_when_estimate_exceeds_free(
+    tmp_path: Path, make_docs: MakeDocs, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    if not _has_memory_estimate():
+        pytest.skip("needs an e-means with memory_estimate (the e-means-rocm fork)")
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *_a, **_k: (1, 16 * 2**30))
+    fitter = _fitter(tmp_path, device="auto", gpu_threshold=0)
+    with caplog.at_level(logging.DEBUG):
+        result = fitter.run(documents=make_docs(2000, d=64, n_clusters=16))
+    stats = result["stats"]
+    assert stats["backend"] == "cpu"
+    assert stats["device_name"] == "cpu"
+    assert stats["precision_used"] == "fp32"
+    assert "GiB" in stats["fallback_reason"]
+    assert stats["memory_estimate_bytes"] > 0
+    assert [r.getMessage() for r in _warnings(caplog)] == [stats["fallback_reason"]]
+    assert load_model(result["model_path"]).metadata["backend"] == "cpu"
+
+
+def test_upstream_records_no_memory_estimate(tmp_path: Path, make_docs: MakeDocs) -> None:
+    if _has_memory_estimate():
+        pytest.skip("needs upstream e-means without memory_estimate")
+    stats = _fitter(tmp_path).run(documents=make_docs(2000, d=64, n_clusters=16))["stats"]
+    assert stats["backend"].startswith("gpu-")
+    assert stats["memory_estimate_bytes"] is None
