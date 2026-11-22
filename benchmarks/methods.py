@@ -89,9 +89,10 @@ def _train_faiss_lloyd(
         verbose=False,
     )
     km.train(x, init_centroids=init)
+    # faiss stops early once assignments stop changing; the pass count actually run is what gets reported.
     used = len(km.iteration_stats or [])
-    if used != niter:
-        msg = f"faiss.Kmeans ran {used} iterations, expected {niter}"
+    if used > niter or used == 0:
+        msg = f"faiss.Kmeans ran {used} iterations, expected at most {niter}"
         raise RuntimeError(msg)
     return TrainResult(np.asarray(km.centroids, dtype=np.float32), float(used), {"niter": niter})
 
