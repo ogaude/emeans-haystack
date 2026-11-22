@@ -22,6 +22,25 @@ lint = "ruff check . && ruff format --check ."
 fmt = "ruff check --fix . ; ruff format ."
 types = "mypy {args:.}"
 
+# Local-only AMD ROCm envs (RX 9060 XT): never built in CI.
+# Accepted risk: with `unsafe-best-match`, any package published on the AMD index with a higher version than on
+# PyPI wins (dependency confusion). Hatch installs extra-dependencies as plain `uv pip` requirements, outside uv's
+# project mode, so an explicit index pin for torch is not relied on here. torch is pinned to an exact +rocm
+# version and the AMD index is a vendor index.
+[tool.hatch.envs.bench-gpu]
+template = "bench-cpu"
+extra-dependencies = ["torch[device-{env:EMEANS_ROCM_GFX:gfx1200}]==2.14.0+rocm10.1.0"]
+env-vars = { UV_EXTRA_INDEX_URL = "https://stable.repo.amd.com/rocm/whl-next/", UV_INDEX_STRATEGY = "unsafe-best-match", OMP_NUM_THREADS = "{env:BENCH_THREADS:10}" }
+
+# Run `hatch run bench-gpu-fork:link` once after creating or recreating this env (needs EMEANS_ROCM_FORK pointing
+# at the e-means-rocm clone). Run `unlink` before anything that upgrades or reinstalls faiss-cpu, then `link` again.
+[tool.hatch.envs.bench-gpu-fork]
+template = "bench-gpu"
+
+[tool.hatch.envs.bench-gpu-fork.scripts]
+link = "python ../scripts/link_fork.py"
+unlink = "python ../scripts/link_fork.py --restore"
+
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
 pythonpath = ["."]
