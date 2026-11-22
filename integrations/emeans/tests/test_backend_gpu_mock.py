@@ -751,7 +751,7 @@ class FakeEngine:
         }
         FakeEngine.instances.append(self)
 
-    def train(self, _x: FakeTensor) -> tuple[FakeTensor, None]:
+    def train(self, _x: FakeTensor, init_centroids: object = None) -> tuple[FakeTensor, None]:  # noqa: ARG002
         self.trained = True
         return FakeTensor(np.random.default_rng(0).normal(size=(self.k, self.d)).astype(np.float32)), None
 

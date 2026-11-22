@@ -282,3 +282,25 @@ def test_upstream_records_no_memory_estimate(tmp_path: Path, make_docs: MakeDocs
     stats = _fitter(tmp_path).run(documents=make_docs(2000, d=64, n_clusters=16))["stats"]
     assert stats["backend"].startswith("gpu-")
     assert stats["memory_estimate_bytes"] is None
+
+
+def test_fit_init_centroids_on_gpu() -> None:
+    x = np.random.default_rng(0).normal(size=(2000, 32)).astype(np.float32)
+    backend = select_backend(device="cuda", n=2000, k=16, gpu_threshold=0)
+    kwargs: dict[str, Any] = {
+        "k": 16,
+        "spherical": False,
+        "nepochs": 2.0,
+        "seed": 1,
+        "max_points_per_centroid": None,
+        "backend": backend,
+        "precision": "fp32",
+        "deterministic": True,
+    }
+    first = _backend.fit_model(x, init_centroids=x[:16].copy(), **kwargs).centroids
+    again = _backend.fit_model(x, init_centroids=x[:16].copy(), **kwargs).centroids
+    other = _backend.fit_model(x, init_centroids=x[100:116].copy(), **kwargs).centroids
+    assert first.dtype == np.float32
+    assert first.shape == (16, 32)
+    np.testing.assert_array_equal(first, again)
+    assert not np.array_equal(first, other)

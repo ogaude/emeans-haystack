@@ -287,8 +287,8 @@ def test_fit_model_info_plain_types() -> None:
 @pytest.mark.parametrize("stats", [[], [{}]])
 def test_fit_model_imbalance_nan_without_iteration_stats(monkeypatch: pytest.MonkeyPatch, stats: list) -> None:
     class NoStats(_backend.NumpyEmeans):  # type: ignore[misc,name-defined]
-        def train(self, x: np.ndarray) -> object:
-            result = super().train(x)
+        def train(self, x: np.ndarray, init_centroids: np.ndarray | None = None) -> object:
+            result = super().train(x, init_centroids=init_centroids)
             self.iteration_stats = list(stats)
             return result
 
@@ -358,3 +358,29 @@ def test_deterministic_keeps_user_cublas_config(monkeypatch: pytest.MonkeyPatch)
     with _backend._deterministic(_FakeDeterministicTorch(None), enabled=True):
         assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":16:8"
     assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":16:8"
+
+
+def _direct_engine_centroids(init: np.ndarray | None) -> np.ndarray:
+    em = _backend.NumpyEmeans(  # type: ignore[attr-defined]
+        8, 4, nepochs=2.0, seed=1, spherical=True, max_points_per_centroid=None, capture_assignments=False
+    )
+    centroids, _ = em.train(unit_rows(), init_centroids=init)
+    return np.asarray(centroids)
+
+
+def test_fit_init_centroids_matches_direct_engine() -> None:
+    init = unit_rows()[:4].copy()
+    np.testing.assert_array_equal(fit(init_centroids=init).centroids, _direct_engine_centroids(init))
+
+
+def test_fit_init_centroids_changes_result() -> None:
+    x = unit_rows()
+    first = fit(init_centroids=x[:4].copy()).centroids
+    second = fit(init_centroids=x[10:14].copy()).centroids
+    assert not np.array_equal(first, second)
+
+
+def test_fit_default_init_unchanged() -> None:
+    default = fit().centroids
+    np.testing.assert_array_equal(default, fit(init_centroids=None).centroids)
+    np.testing.assert_array_equal(default, _direct_engine_centroids(None))
