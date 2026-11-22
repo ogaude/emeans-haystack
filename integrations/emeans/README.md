@@ -14,6 +14,8 @@
 pip install emeans-haystack            # CPU: brings haystack-ai, faiss-cpu and numpy
 ```
 
+Until the package is on PyPI, install it from a clone: `pip install ./integrations/emeans`.
+
 Requirements: Python 3.11 or newer, `haystack-ai>=3.5`, `faiss-cpu>=1.16.0` (the first release that contains
 `faiss.contrib.e_means`), `numpy>=1.25`.
 
@@ -38,4 +40,7 @@ Importing the package never imports PyTorch. PyTorch is loaded only when a GPU b
 
 Refer to the general [Contribution Guidelines](https://github.com/deepset-ai/haystack-core-integrations/blob/main/CONTRIBUTING.md).
 
-<!-- If integration tests need credentials or a running service, document it here. Otherwise, delete this comment. -->
+GPU tests are marked `integration` and `gpu`, so `hatch run test:unit` and CI never run them. They are local
+only: run them with `hatch run gpu:gpu-tests` (upstream e-means) or `hatch run gpu-fork:gpu-tests` (after
+`hatch run gpu-fork:link`, with `EMEANS_ROCM_FORK` pointing at an e-means-rocm clone). They skip when PyTorch sees no
+GPU.
