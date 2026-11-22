@@ -5,6 +5,7 @@
 from typing import Any
 
 import report
+from precision import precision_grid
 from report import aggregate, check, marks, render
 from run_grid import full_grid
 
@@ -131,3 +132,91 @@ def test_sweep_table() -> None:
     assert sweep.count("| emeans-cpu |") == 2
     assert sweep.count("| faiss-lloyd |") == 2
     assert report.OBJECTIVE_TOLERANCE == 0.005
+
+
+def _variant(gap: float, *, gap_max: float | None = None, **kw: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "status": "ok", "nonfinite": False, "precision_used": "fp32", "drift_gap_median": gap,
+        "drift_gap_max": gap if gap_max is None else gap_max, "share_same_cluster": 0.9 - gap / 10,
+        "objective_delta_rel": gap / 1000, "objective": 1.0,
+    }  # fmt: skip
+    out.update(kw)
+    return out
+
+
+def prec(seed: int, *, reduced_gap: float = 0.2, other_gap: float = 0.8, **overrides: Any) -> dict[str, Any]:
+    variants = {
+        "fp32_rerun": _variant(0.0),
+        "fp32_other_seed": _variant(other_gap),
+        "fp16": _variant(reduced_gap, precision_requested="fp16", precision_used="fp16"),
+        "bf16": _variant(reduced_gap, precision_requested="bf16", precision_used="bf16"),
+        "round16": _variant(0.001),
+        "roundbf": _variant(0.01),
+    }
+    variants.update(overrides)
+    return {
+        "key": f"100000|1024|random|euclidean|{seed}", "status": "ok", "n": 100_000, "k": 1024, "data": "random",
+        "mode": "euclidean", "seed": seed, "variants": variants,
+    }  # fmt: skip
+
+
+def test_precision_section() -> None:
+    text = render([rec("emeans-cpu", 0, 1.0, 1.0)], precision_records=[prec(s) for s in range(3)])
+    section = text.split("## Precision")[1]
+    for name in ("fp16", "bf16", "fp32_rerun", "fp32_other_seed"):
+        assert f"| {name} |" in section
+    floor = section.split("### Storage floor")[1]
+    assert "| round16 |" in floor
+    assert "| roundbf |" in floor
+    assert "| drift_gap median | drift_gap max |" in section
+    assert "| 3 |" in section
+
+
+def test_spike_contradictions_none() -> None:
+    assert report.spike_contradictions([prec(s) for s in range(3)]) == []
+
+
+def test_spike_contradictions_flags() -> None:
+    slower = report.spike_contradictions([prec(s, reduced_gap=0.9, other_gap=0.8) for s in range(3)])
+    assert any("bf16" in m and "0.9" in m and "0.8" in m and "random euclidean n=100000 k=1024" in m for m in slower)
+    nonfinite = report.spike_contradictions([prec(0, fp16=_variant(0.1, nonfinite=True, status="nonfinite"))])
+    assert any("non-finite" in m for m in nonfinite)
+    rerun = report.spike_contradictions([prec(0, fp32_rerun=_variant(0.0, gap_max=0.02))])
+    assert any("rerun" in m for m in rerun)
+    fallback = report.spike_contradictions(
+        [prec(0, bf16=_variant(0.1, status="precision_fallback", precision_requested="bf16"))]
+    )
+    assert any("fallback" in m for m in fallback)
+
+
+def test_fallback_excluded_from_headline() -> None:
+    bad = _variant(0.0, status="precision_fallback", precision_requested="bf16")
+    stats = report.aggregate_precision([prec(0), prec(1, bf16=bad)])
+    entry = stats[("random", "euclidean", 100_000, 1024)]["bf16"]
+    assert entry["seeds"] == 1
+    assert entry["excluded"] == 1
+
+
+def test_check_precision_completeness() -> None:
+    cells = precision_grid(("random",), seeds=(0, 1, 2))
+    assert report.check_precision([], cells) == ["precision study not run"]
+    one = [prec(0)]
+    problems = report.check_precision(one, [c for c in cells if (c.n, c.k, c.mode) == (100_000, 1024, "euclidean")])
+    assert any("missing precision cell" in p for p in problems)
+    assert any("fewer than 3 seeds" in p for p in problems)
+    full = [prec(s) for s in range(3)]
+    only = [c for c in cells if (c.n, c.k, c.mode) == (100_000, 1024, "euclidean")]
+    assert report.check_precision(full, only) == []
+
+
+def test_render_includes_spike_check_line() -> None:
+    ok = render([rec("emeans-cpu", 0, 1.0, 1.0)], precision_records=[prec(0)])
+    assert "Spike check: consistent with the Phase 2 spike" in ok
+    bad = render([rec("emeans-cpu", 0, 1.0, 1.0)], precision_records=[prec(0, reduced_gap=0.9)])
+    assert "Spike check: results contradict the Phase 2 spike" in bad
+    missing = render([rec("emeans-cpu", 0, 1.0, 1.0)], precision_records=[])
+    assert "Precision study not run" in missing
+
+
+def test_protocol_states_cohere_normalisation() -> None:
+    assert "normalises every row" in render([rec("emeans-cpu", 0, 1.0, 1.0)])

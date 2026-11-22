@@ -17,6 +17,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from precision import PCell, precision_grid
 from run_grid import Cell, full_grid
 
 BENCH_DIR = Path(__file__).resolve().parent
@@ -26,6 +27,10 @@ GPU_NOT_HELP = "GPU does not help"
 CPU_WINS = "CPU e-means wins"
 NOT_COMPARABLE = "not comparable"
 BASELINE = "faiss-lloyd"
+PRECISION_VARIANTS = ("fp16", "bf16", "fp32_rerun", "fp32_other_seed")
+FLOOR_VARIANTS = ("round16", "roundbf")
+REDUCED = ("fp16", "bf16")
+SPIKE_CONSISTENT = "consistent with the Phase 2 spike"
 _BIG = 1000
 
 
@@ -214,6 +219,8 @@ def _protocol() -> list[str]:
         ),
         (
             "- Real data is spherical (scikit-learn runs on unit-norm input, its centroids are not renormalised). "
+            "The Cohere file's rows are not unit-norm: the harness normalises every row to unit length when it "
+            "loads them (the raw norm range is recorded in each run's data provenance). "
             "Random data is Euclidean and is for speed only: Gaussian noise has no cluster structure."
         ),
         (
@@ -362,13 +369,201 @@ def _not_run(records: list[dict[str, Any]]) -> list[str]:
     return _table(["data", "n", "k", "kind", "passes", "method", "timing", "status", "reason", "seeds"], body)
 
 
-def render(records: list[dict[str, Any]], *, title: str = "Benchmark results", smoke: bool = False) -> str:
+def load_precision(path: Path) -> list[dict[str, Any]]:
+    """
+    Read precision records, or return none when the study has not been run.
+
+    :param path: JSONL file written by `precision.py`.
+    :returns: The records (last record of a repeated key wins); empty when the file is missing.
+    """
+    return load_records(path) if path.exists() else []
+
+
+PrecisionGroup = tuple[str, str, int, int]
+
+
+def _group(record: dict[str, Any]) -> PrecisionGroup:
+    return (record["data"], record["mode"], record["n"], record["k"])
+
+
+def _label(group: PrecisionGroup) -> str:
+    data, mode, n, k = group
+    return f"{data} {mode} n={n} k={k}"
+
+
+def aggregate_precision(records: Iterable[dict[str, Any]]) -> dict[PrecisionGroup, dict[str, dict[str, Any]]]:
+    """
+    Aggregate precision records over seeds.
+
+    Variants that fell back to another precision or produced non-finite centroids are excluded from the statistics
+    and counted in `excluded`.
+
+    :param records: Records as written by `precision.py`.
+    :returns: For each (data, mode, n, k) and variant: seed count, drift_gap median of medians and max of maxima,
+        share of same cluster and objective delta (percent) as (median, min, max), and the excluded count.
+    """
+    gathered: dict[PrecisionGroup, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    for record in records:
+        if record.get("status") != "ok":
+            continue
+        for name, entry in (record.get("variants") or {}).items():
+            gathered[_group(record)][name].append(entry)
+    out: dict[PrecisionGroup, dict[str, dict[str, Any]]] = {}
+    for group, variants in gathered.items():
+        out[group] = {}
+        for name, entries in variants.items():
+            good = [e for e in entries if e.get("status") == "ok" and "drift_gap_median" in e]
+            stats: dict[str, Any] = {"seeds": len(good), "excluded": len(entries) - len(good)}
+            if good:
+                gap = [e["drift_gap_median"] for e in good]
+                share = [e["share_same_cluster"] for e in good]
+                delta = [100.0 * e["objective_delta_rel"] for e in good]
+                stats.update(
+                    drift_gap_median=statistics.median(gap),
+                    drift_gap_max=max(e["drift_gap_max"] for e in good),
+                    share=(statistics.median(share), min(share), max(share)),
+                    delta=(statistics.median(delta), min(delta), max(delta)),
+                )
+            out[group][name] = stats
+    return out
+
+
+def spike_contradictions(records: Iterable[dict[str, Any]]) -> list[str]:
+    """
+    List results that contradict the Phase 2 precision spike (D-23).
+
+    The spike found no overflow, deterministic reruns that agree exactly, and reduced precision that drifts less
+    from FP32 than a change of seed does. A contradiction is reported as measured; nothing here changes guidance.
+
+    :param records: Records as written by `precision.py`.
+    :returns: One message per problem, naming the cell and the numbers; empty when nothing contradicts the spike.
+    """
+    records = [r for r in records if r.get("status") == "ok"]
+    messages: list[str] = []
+    for record in records:
+        cell = f"{_label(_group(record))} seed {record.get('seed')}"
+        for name, entry in (record.get("variants") or {}).items():
+            if entry.get("nonfinite"):
+                messages.append(f"{cell}: {name} produced non-finite centroids")
+            if entry.get("status") == "precision_fallback":
+                messages.append(
+                    f"{cell}: {name} ran as {entry.get('precision_used')} instead of "
+                    f"{entry.get('precision_requested')} (silent fallback)"
+                )
+        rerun = (record.get("variants") or {}).get("fp32_rerun") or {}
+        if rerun.get("drift_gap_max", 0.0) > 0:
+            messages.append(
+                f"{cell}: deterministic FP32 rerun drifted (drift_gap max {rerun['drift_gap_max']:.3g}, expected 0)"
+            )
+    for group, variants in sorted(aggregate_precision(records).items()):
+        baseline = variants.get("fp32_other_seed", {}).get("drift_gap_median")
+        if baseline is None:
+            continue
+        for name in REDUCED:
+            value = variants.get(name, {}).get("drift_gap_median")
+            if value is not None and value >= baseline:
+                messages.append(
+                    f"{_label(group)}: {name} drift_gap median {value:.3g} is not below the "
+                    f"FP32 other-seed baseline {baseline:.3g}"
+                )
+    return messages
+
+
+def _precision_rows(
+    group_stats: dict[str, dict[str, Any]], names: Sequence[str], group: PrecisionGroup
+) -> list[list[str]]:
+    data, mode, n, k = group
+    body = []
+    for name in names:
+        stats = group_stats.get(name)
+        if stats is None:
+            continue
+        if "drift_gap_median" not in stats:
+            body.append(
+                [data, mode, str(n), str(k), name, str(stats["seeds"]), "-", "-", "-", "-", str(stats["excluded"])]
+            )
+            continue
+        body.append(
+            [
+                data, mode, str(n), str(k), name, str(stats["seeds"]),
+                _num(stats["drift_gap_median"]), _num(stats["drift_gap_max"]),
+                _span(*stats["share"]), _span(*stats["delta"]), str(stats["excluded"]),
+            ]
+        )  # fmt: skip
+    return body
+
+
+_PRECISION_HEADER = [
+    "data", "mode", "n", "k", "variant", "seeds", "drift_gap median", "drift_gap max",
+    "share same cluster", "objective vs FP32 (%)", "excluded",
+]  # fmt: skip
+
+
+def render_precision(records: list[dict[str, Any]]) -> list[str]:
+    """
+    Render the Precision section.
+
+    :param records: Records as written by `precision.py`.
+    :returns: Markdown lines.
+    """
+    out = ["## Precision", ""]
+    if not any(r.get("status") == "ok" for r in records):
+        return [*out, "Precision study not run.", "", "Spike check: not evaluated (no precision records).", ""]
+    out += [
+        (
+            "All fits are deterministic from the same shared start; the reference is FP32. The baselines are an FP32 "
+            "deterministic rerun and an FP32 run with another seed and another start. FP16 and BF16 run on the "
+            "e-means-rocm fork's Triton rung. Centroids are matched one to one (Hungarian) before measuring. "
+            "`drift_gap` 1.0 means a centroid moved as far as its nearest other reference centroid; the table shows "
+            "the median over seeds of the per-run median and the maximum over seeds of the per-run maximum. Labels "
+            "and objective come from the shared exact FP32 scorer. Runs that fell back to another precision or "
+            "produced non-finite centroids are left out of the statistics and counted under `excluded`. "
+            "Cells show `median [min-max]` over seeds."
+        ),
+        "",
+    ]
+    aggregated = aggregate_precision(records)
+    body: list[list[str]] = []
+    floor: list[list[str]] = []
+    for group in sorted(aggregated):
+        body += _precision_rows(aggregated[group], PRECISION_VARIANTS, group)
+        floor += _precision_rows(aggregated[group], FLOOR_VARIANTS, group)
+    out += _table(_PRECISION_HEADER, body)
+    out += [
+        "### Storage floor",
+        "",
+        "FP32 reference centroids rounded to FP16 or BF16 and back: the least drift possible.",
+        "",
+    ]
+    out += _table(_PRECISION_HEADER, floor)
+    problems = [f"{r['key']}: {r.get('status')}: {r.get('reason')}" for r in records if r.get("status") != "ok"]
+    if problems:
+        out += ["Cells without a result:", "", *[f"- {p}" for p in problems], ""]
+    contradictions = spike_contradictions(records)
+    if contradictions:
+        out += ["Spike check: results contradict the Phase 2 spike; reported as measured, guidance not changed:", ""]
+        out += [f"- {m}" for m in contradictions]
+        out.append("")
+    else:
+        out += [f"Spike check: {SPIKE_CONSISTENT}.", ""]
+    return out
+
+
+def render(
+    records: list[dict[str, Any]],
+    *,
+    title: str = "Benchmark results",
+    smoke: bool = False,
+    precision_records: list[dict[str, Any]] | None = None,
+) -> str:
     """
     Render RESULTS.md.
 
     :param records: Records as written by `run_grid`.
     :param title: Page title.
     :param smoke: Mark the page as a smoke run, not results.
+    :param precision_records: Records of the precision study; None leaves the Precision section out, an empty list
+        says the study was not run.
     :returns: Markdown text.
     """
     rows = aggregate(records)
@@ -382,6 +577,8 @@ def render(records: list[dict[str, Any]], *, title: str = "Benchmark results", s
     lines += _sweep_tables(rows) or ["No sweep records.", ""]
     lines += ["## Not run", ""]
     lines += _not_run(records)
+    if precision_records is not None:
+        lines += render_precision(precision_records)
     return "\n".join(lines)
 
 
@@ -410,6 +607,35 @@ def check(records: list[dict[str, Any]], expected_cells: Iterable[Cell], min_see
     return problems
 
 
+def check_precision(records: list[dict[str, Any]], expected_cells: Iterable[PCell], min_seeds: int = 3) -> list[str]:
+    """
+    Check the precision study for completeness.
+
+    :param records: Records as written by `precision.py`; empty means the study was not run.
+    :param expected_cells: Cells the full precision grid should have covered.
+    :param min_seeds: Minimum ok seeds per (data, mode, n, k).
+    :returns: Problems found; empty when complete.
+    """
+    if not records:
+        return ["precision study not run"]
+    by_key = {r.get("key"): r for r in records}
+    problems = []
+    for cell in expected_cells:
+        found = by_key.get(cell.key)
+        if found is None:
+            problems.append(f"missing precision cell: {cell.key}")
+        elif found.get("status") != "ok":
+            problems.append(f"precision cell {cell.key}: {found.get('status')}: {found.get('reason')}")
+    seeds: dict[PrecisionGroup, set[int]] = defaultdict(set)
+    for r in records:
+        if r.get("status") == "ok":
+            seeds[_group(r)].add(r["seed"])
+    for group, have in sorted(seeds.items()):
+        if len(have) < min_seeds:
+            problems.append(f"fewer than {min_seeds} seeds ({len(have)}) for precision cell: {_label(group)}")
+    return problems
+
+
 def main() -> int:
     """Write RESULTS.md from a records file, or check a full run for completeness."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -417,6 +643,7 @@ def main() -> int:
     parser.add_argument("--results", type=Path, default=None)
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--precision", type=Path, default=None)
     args = parser.parse_args()
     smoke_dir = BENCH_DIR / "scratch" / "smoke"
     results = args.results or (smoke_dir / "speed.jsonl" if args.smoke else BENCH_DIR / "results" / "speed.jsonl")
@@ -425,15 +652,26 @@ def main() -> int:
         sys.stderr.write(f"no records at {results}\n")
         return 2
     records = load_records(results)
+    precision_path = args.precision or (
+        smoke_dir / "precision.jsonl" if args.smoke else BENCH_DIR / "results" / "precision.jsonl"
+    )
+    precision_records = load_precision(precision_path)
     if args.check:
         methods = sorted({r["method"] for r in records})
         datasets = sorted({r["data"] for r in records})
         problems = check(records, full_grid(methods, datasets))
+        precision_datasets = sorted({r["data"] for r in precision_records if "data" in r}) or datasets
+        problems += check_precision(precision_records, precision_grid(precision_datasets))
+        contradictions = spike_contradictions(precision_records)
         for problem in problems:
             sys.stdout.write(problem + "\n")
-        return 1 if problems else 0
+        if contradictions:
+            sys.stdout.write("Spike contradictions (D-23: stop and ask the owner)\n")
+            for message in contradictions:
+                sys.stdout.write(message + "\n")
+        return 1 if problems or contradictions else 0
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(records, smoke=args.smoke), encoding="utf-8")
+    out.write_text(render(records, smoke=args.smoke, precision_records=precision_records), encoding="utf-8")
     sys.stderr.write(f"wrote {out}\n")
     return 0
 
