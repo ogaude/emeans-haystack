@@ -52,7 +52,7 @@ NVIDIA_HIDDEN = (
 
 
 def visible_clause(name: str, value: str) -> str:
-    return f"{name}={value!r} is set and may hide it; use device='cpu' to run on CPU without this warning"
+    return f"{name}={value!r} is set and may hide it; unset it, or use device='cpu' to run on CPU"
 
 
 HINT = "(the e-means-rocm fork adds Triton kernels and BF16/FP16 on RX 9000 GPUs)"

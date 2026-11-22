@@ -304,7 +304,7 @@ def mismatch_reason(
 
 
 def _visible_devices_clause(name: str, value: str) -> str:
-    return f"{name}={value!r} is set and may hide it; use device='cpu' to run on CPU without this warning"
+    return f"{name}={value!r} is set and may hide it; unset it, or use device='cpu' to run on CPU"
 
 
 def hidden_gpu_reason(
