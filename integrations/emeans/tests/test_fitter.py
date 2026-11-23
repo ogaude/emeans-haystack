@@ -9,12 +9,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import faiss
 import numpy as np
 import pytest
 from haystack import Document
 
 from haystack_integrations.components.preprocessors.emeans import EmeansFitter, fitter
-from haystack_integrations.components.preprocessors.emeans._backend import FitResult, detect_emeans_source
+from haystack_integrations.components.preprocessors.emeans._backend import FitResult
 from haystack_integrations.components.preprocessors.emeans._model import METADATA_KEYS, load_model
 
 MakeDocs = Callable[..., list[Document]]
@@ -166,7 +167,7 @@ class TestStats:
         assert stats["backend"] == "cpu"
         assert stats["device_name"] == "cpu"
         assert stats["precision_used"] == "fp32"
-        assert stats["emeans_source"] == detect_emeans_source()
+        assert stats["emeans_source"] == f"faiss-cpu {faiss.__version__}"
         assert stats["assignment_backend"] == "faiss"
         assert stats["k"] == 4
         assert stats["d"] == 16

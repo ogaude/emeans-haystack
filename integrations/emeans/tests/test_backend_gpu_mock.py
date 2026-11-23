@@ -57,7 +57,7 @@ def visible_clause(name: str, value: str) -> str:
     return f"{name}={value!r} is set and may hide it; unset it, or use device='cpu' to run on CPU"
 
 
-HINT = "(the e-means-rocm fork adds Triton kernels and BF16/FP16 on RX 9000 GPUs)"
+HINT = "(pip install emeans-rocm for Triton kernels and BF16/FP16 on RX 9000 GPUs)"
 
 
 def warnings_in(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -69,7 +69,7 @@ def gpu_env(**overrides: Any) -> EnvInfo:
         "torch_importable": True,
         "gpu_available": True,
         "is_rocm": False,
-        "fork_detected": False,
+        "emeans_rocm": False,
         "device_name": "Fake GPU",
         "torch_version": "2.15.0",
         "hip_version": None,
@@ -250,14 +250,14 @@ def test_nvidia_auto_and_triton_fail_picks_native() -> None:
     assert (choice.name, choice.requested) == ("native", "native")
 
 
-def test_amd_with_fork_picks_fork_triton() -> None:
+def test_amd_with_emeans_rocm_picks_rocm_triton() -> None:
     probe = FakeProbe()
-    choice = choose(gpu_env(is_rocm=True, hip_version="7.16", fork_detected=True), probe)
-    assert (choice.name, choice.requested) == ("fork-triton", "auto")
-    assert [call[0] for call in probe.calls] == ["fork-triton"]
+    choice = choose(gpu_env(is_rocm=True, hip_version="7.16", emeans_rocm=True), probe)
+    assert (choice.name, choice.requested) == ("rocm-triton", "auto")
+    assert [call[0] for call in probe.calls] == ["rocm-triton"]
 
 
-def test_amd_without_fork_picks_native_silently(caplog: pytest.LogCaptureFixture) -> None:
+def test_amd_without_emeans_rocm_picks_native_silently(caplog: pytest.LogCaptureFixture) -> None:
     probe = FakeProbe()
     with caplog.at_level(logging.DEBUG):
         choice = choose(gpu_env(is_rocm=True, hip_version="7.16"), probe)
@@ -271,9 +271,9 @@ class CompilationError(Exception):
 
 
 @pytest.mark.parametrize("error", [ImportError, RuntimeError, CompilationError])
-def test_fork_probe_failure_falls_to_native(error: type[Exception]) -> None:
-    probe = FakeProbe({"fork-triton": fail(f"{error.__name__}: boom")})
-    choice = choose(gpu_env(is_rocm=True, hip_version="7.16", fork_detected=True), probe)
+def test_emeans_rocm_probe_failure_falls_to_native(error: type[Exception]) -> None:
+    probe = FakeProbe({"rocm-triton": fail(f"{error.__name__}: boom")})
+    choice = choose(gpu_env(is_rocm=True, hip_version="7.16", emeans_rocm=True), probe)
     assert (choice.name, choice.requested) == ("native", "native")
 
 
@@ -602,17 +602,17 @@ def test_cpu_fit_info_has_no_hint() -> None:
 
 
 @pytest.mark.parametrize(
-    ("is_rocm", "assignment_backend", "source", "expected"),
+    ("is_rocm", "assignment_backend", "emeans_rocm", "expected"),
     [
-        (True, "native", "faiss-cpu", HINT),
-        (False, "native", "faiss-cpu", None),
-        (True, "triton", "faiss-cpu", None),
-        (True, "native", "e-means-rocm", None),
-        (False, "triton", "e-means-rocm", None),
+        (True, "native", False, HINT),
+        (False, "native", False, None),
+        (True, "triton", False, None),
+        (True, "native", True, None),
+        (False, "triton", True, None),
     ],
 )
-def test_backend_hint_table(is_rocm: bool, assignment_backend: str, source: str, expected: str | None) -> None:
-    assert _backend_hint(is_rocm=is_rocm, assignment_backend=assignment_backend, emeans_source=source) == expected
+def test_backend_hint_table(is_rocm: bool, assignment_backend: str, emeans_rocm: bool, expected: str | None) -> None:
+    assert _backend_hint(is_rocm=is_rocm, assignment_backend=assignment_backend, emeans_rocm=emeans_rocm) == expected
 
 
 def test_fitter_info_line_carries_hint(
@@ -800,7 +800,9 @@ class FakeGpu:
             self.e_means.memory_estimate = memory_estimate
         monkeypatch.setitem(sys.modules, "torch", self.torch)
         monkeypatch.setitem(sys.modules, "faiss.contrib.e_means", self.e_means)
-        monkeypatch.setattr(_backend, "detect_emeans_source", lambda: "e-means-rocm")
+        monkeypatch.setattr(_backend, "emeans_rocm_importable", lambda: True)
+        monkeypatch.setattr(_backend, "_dist_version", lambda _dist: "0.2.5")
+        monkeypatch.setattr(_backend, "gpu_engine", lambda: self.e_means)
 
 
 def run_fit(

@@ -6,6 +6,7 @@
 
 import contextlib
 import importlib
+import importlib.metadata
 import importlib.util
 import os
 import sys
@@ -36,7 +37,7 @@ class EnvInfo:
     torch_importable: bool
     gpu_available: bool
     is_rocm: bool
-    fork_detected: bool
+    emeans_rocm: bool
     device_name: str | None
     torch_version: str | None
     hip_version: str | None
@@ -85,13 +86,45 @@ class FitResult:
     info: dict[str, Any]
 
 
-def detect_emeans_source() -> str:
-    """Return `"e-means-rocm"` when the ROCm-capable e-means fork is installed, else `"faiss-cpu"`."""
+def emeans_rocm_importable() -> bool:
+    """Return whether the `emeans_rocm` package is installed, without importing it (so without importing torch)."""
     try:
-        fork = importlib.util.find_spec("faiss.contrib.e_means.device_profile") is not None
+        return importlib.util.find_spec("emeans_rocm") is not None
     except (ImportError, ValueError):
-        fork = False
-    return "e-means-rocm" if fork else "faiss-cpu"
+        return False
+
+
+def gpu_engine() -> Any:
+    """
+    Return the module that provides the GPU `Emeans` and `QuantizedEmeans` classes.
+
+    `emeans_rocm` is used on any GPU when it is importable, otherwise `faiss.contrib.e_means`. CPU paths must not
+    call this: they use the stock `NumpyEmeans`.
+    """
+    if emeans_rocm_importable():
+        return importlib.import_module("emeans_rocm")
+    return importlib.import_module("faiss.contrib.e_means")
+
+
+def _dist_version(dist: str) -> str | None:
+    """Return the installed version of distribution `dist`, or `None` when it is not installed."""
+    try:
+        return importlib.metadata.version(dist)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _cpu_source() -> str:
+    """Return the engine label for CPU fits, e.g. `"faiss-cpu 1.16.0"`."""
+    return f"faiss-cpu {faiss.__version__}"
+
+
+def detect_emeans_source() -> str:
+    """Return the GPU engine label: `"emeans-rocm <version>"` when it is installed, else the faiss-cpu label."""
+    if emeans_rocm_importable():
+        version = _dist_version("emeans-rocm")
+        return f"emeans-rocm {version}" if version else "emeans-rocm"
+    return _cpu_source()
 
 
 @dataclass(frozen=True)
@@ -126,7 +159,7 @@ def _run_probe(requested: str, precision: str) -> ProbeResult:
     # Both spherical modes are probed: e-means takes mode-dependent code paths, and the verdict is reused for
     # every later fit and assignment on this rung, whatever its mode.
     torch = importlib.import_module("torch")
-    e_means = importlib.import_module("faiss.contrib.e_means")
+    e_means = gpu_engine()
     x = None
     em = None
     centroids = None
@@ -225,10 +258,10 @@ class _Attempt:
         return None if result.ok else result.reason
 
 
-def _needs_fork(env: EnvInfo) -> str | None:
-    if env.is_rocm and env.fork_detected:
+def _needs_emeans_rocm(env: EnvInfo) -> str | None:
+    if env.is_rocm and env.emeans_rocm:
         return None
-    return "needs the e-means-rocm fork on a ROCm build of PyTorch"
+    return "needs the emeans-rocm package (pip install emeans-rocm) on a ROCm build of PyTorch"
 
 
 def _needs_nvidia(env: EnvInfo) -> str | None:
@@ -247,7 +280,7 @@ def default_rungs(probe_fn: ProbeFn | None = None) -> tuple[GpuRung, ...]:
     """
     fn = probe_fn if probe_fn is not None else probe
     return (
-        _Attempt("fork-triton", "auto", _needs_fork, fn),
+        _Attempt("rocm-triton", "auto", _needs_emeans_rocm, fn),
         _Attempt("nvidia-auto", "auto", _needs_nvidia, fn),
         _Attempt("nvidia-triton", "triton", _needs_nvidia, fn),
         _Attempt("native", "native", _always, fn),
@@ -353,12 +386,12 @@ def hidden_gpu_reason(
 
 def detect_environment() -> EnvInfo:
     """Inspect the environment; PyTorch is imported only when it is installed."""
-    fork = detect_emeans_source() == "e-means-rocm"
+    emeans_rocm = emeans_rocm_importable()
     try:
         torch_findable = importlib.util.find_spec("torch") is not None
     except (ImportError, ValueError):
         torch_findable = False
-    unavailable = EnvInfo(False, False, False, fork, None, None, None)
+    unavailable = EnvInfo(False, False, False, emeans_rocm, None, None, None)
     if not torch_findable:
         return unavailable
     try:
@@ -367,7 +400,7 @@ def detect_environment() -> EnvInfo:
         # find_spec found torch, so it is installed and any import failure means a broken install. A ROCm/CUDA build
         # whose shared libraries cannot be loaded usually raises ImportError, sometimes OSError or RuntimeError.
         reason = f"PyTorch is installed but could not be imported: {type(error).__name__}: {error}"
-        return EnvInfo(False, False, False, fork, None, None, None, mismatch_reason=reason)
+        return EnvInfo(False, False, False, emeans_rocm, None, None, None, mismatch_reason=reason)
     hip_version = torch.version.hip
     device_name: str | None = None
     arch: str | None = None
@@ -398,7 +431,7 @@ def detect_environment() -> EnvInfo:
         torch_importable=True,
         gpu_available=gpu_available,
         is_rocm=hip_version is not None,
-        fork_detected=fork,
+        emeans_rocm=emeans_rocm,
         device_name=device_name,
         torch_version=str(torch.__version__),
         hip_version=hip_version,
@@ -491,13 +524,13 @@ def select_backend(
     return BackendChoice("cpu", "cpu", fallback_reason)
 
 
-_FORK_HINT = "(the e-means-rocm fork adds Triton kernels and BF16/FP16 on RX 9000 GPUs)"
+_EMEANS_ROCM_HINT = "(pip install emeans-rocm for Triton kernels and BF16/FP16 on RX 9000 GPUs)"
 
 
-def _backend_hint(*, is_rocm: bool, assignment_backend: str, emeans_source: str) -> str | None:
-    """Return a one-line hint for AMD users running the native rung on upstream e-means, otherwise `None`."""
-    if is_rocm and assignment_backend == "native" and emeans_source == "faiss-cpu":
-        return _FORK_HINT
+def _backend_hint(*, is_rocm: bool, assignment_backend: str, emeans_rocm: bool) -> str | None:
+    """Return a one-line hint for AMD users running the native rung without emeans-rocm, otherwise `None`."""
+    if is_rocm and assignment_backend == "native" and not emeans_rocm:
+        return _EMEANS_ROCM_HINT
     return None
 
 
@@ -639,7 +672,7 @@ def _fit_cpu(
         "recipe": recipe,
         "n_train": _n_train(n, k, max_points_per_centroid),
         "train_seconds": float(train_seconds),
-        "emeans_source": detect_emeans_source(),
+        "emeans_source": _cpu_source(),
         "faiss_version": str(faiss.__version__),
         "nepochs": float(recipe["nepochs"]),
         "batch_size": int(recipe["batch_size"]),
@@ -741,7 +774,7 @@ def _fit_gpu(
     init_centroids: np.ndarray | None = None,
 ) -> FitResult:
     torch = importlib.import_module("torch")
-    e_means = importlib.import_module("faiss.contrib.e_means")
+    e_means = gpu_engine()
     train_precision, warning = resolve_precision(backend, precision)
     if warning is not None:
         logger.warning("{warning}", warning=warning)
@@ -836,7 +869,7 @@ def _fit_gpu(
             "backend_hint": _backend_hint(
                 is_rocm=torch.version.hip is not None,
                 assignment_backend=label,
-                emeans_source=detect_emeans_source(),
+                emeans_rocm=emeans_rocm_importable(),
             ),
             "memory_estimate_bytes": estimate,
             "fallback_reason": backend.fallback_reason,
@@ -893,7 +926,7 @@ class _GpuAssigner:
     def __init__(self, centroids: np.ndarray, *, spherical: bool, requested: str) -> None:
         faiss_import.check()
         self._torch = importlib.import_module("torch")
-        e_means = importlib.import_module("faiss.contrib.e_means")
+        e_means = gpu_engine()
         k, d = centroids.shape
         self._em = e_means.QuantizedEmeans(d, k, spherical=spherical, quantizer=None, assignment_backend=requested)
         self._em.centroids = self._torch.from_numpy(np.ascontiguousarray(centroids, dtype=np.float32)).to("cuda")

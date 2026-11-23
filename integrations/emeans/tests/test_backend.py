@@ -9,6 +9,7 @@ import sys
 import types
 from importlib.machinery import ModuleSpec
 
+import faiss
 import numpy as np
 import pytest
 
@@ -18,6 +19,7 @@ from haystack_integrations.components.preprocessors.emeans._backend import (
     EnvInfo,
     detect_emeans_source,
     detect_environment,
+    emeans_rocm_importable,
     fit_model,
     select_backend,
 )
@@ -79,7 +81,7 @@ GPU_ENV = EnvInfo(
     torch_importable=True,
     gpu_available=True,
     is_rocm=False,
-    fork_detected=False,
+    emeans_rocm=False,
     device_name="Fake GPU",
     torch_version="0",
     hip_version=None,
@@ -117,38 +119,58 @@ def test_select_uses_usable_rung_and_reports_reasons() -> None:
         )
 
 
-def test_emeans_source_wheel(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_find_spec(monkeypatch: pytest.MonkeyPatch, *, emeans_rocm: ModuleSpec | None) -> None:
     real = importlib.util.find_spec
 
     def fake(name: str, *args: object) -> ModuleSpec | None:
-        if name == "faiss.contrib.e_means.device_profile":
-            return None
+        if name == "emeans_rocm":
+            return emeans_rocm
         return real(name, *args)  # type: ignore[arg-type]
 
     monkeypatch.setattr(importlib.util, "find_spec", fake)
-    assert detect_emeans_source() == "faiss-cpu"
 
 
-def test_emeans_source_fork(monkeypatch: pytest.MonkeyPatch) -> None:
-    real = importlib.util.find_spec
+def test_emeans_rocm_importable_when_spec_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_find_spec(monkeypatch, emeans_rocm=ModuleSpec("emeans_rocm", None))
+    assert emeans_rocm_importable() is True
 
-    def fake(name: str, *args: object) -> ModuleSpec | None:
-        if name == "faiss.contrib.e_means.device_profile":
-            return ModuleSpec(name, None)
-        return real(name, *args)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(importlib.util, "find_spec", fake)
-    assert detect_emeans_source() == "e-means-rocm"
-    assert detect_environment().fork_detected is True
+def test_emeans_rocm_not_importable_when_spec_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_find_spec(monkeypatch, emeans_rocm=None)
+    assert emeans_rocm_importable() is False
 
 
 @pytest.mark.parametrize("error", [ValueError, ImportError])
-def test_emeans_source_find_spec_errors(monkeypatch: pytest.MonkeyPatch, error: type[Exception]) -> None:
+def test_emeans_rocm_importable_find_spec_errors(monkeypatch: pytest.MonkeyPatch, error: type[Exception]) -> None:
     def boom(*_args: object) -> None:
         raise error
 
     monkeypatch.setattr(importlib.util, "find_spec", boom)
-    assert detect_emeans_source() == "faiss-cpu"
+    assert emeans_rocm_importable() is False
+    assert detect_emeans_source() == f"faiss-cpu {faiss.__version__}"
+
+
+def test_emeans_source_names_package_and_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_find_spec(monkeypatch, emeans_rocm=ModuleSpec("emeans_rocm", None))
+    monkeypatch.setattr(_backend, "_dist_version", lambda _dist: "0.2.5")
+    assert detect_emeans_source() == "emeans-rocm 0.2.5"
+    assert detect_environment().emeans_rocm is True
+
+
+def test_emeans_source_without_distribution_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_find_spec(monkeypatch, emeans_rocm=ModuleSpec("emeans_rocm", None))
+    monkeypatch.setattr(_backend, "_dist_version", lambda _dist: None)
+    assert detect_emeans_source() == "emeans-rocm"
+
+
+def test_emeans_source_falls_back_to_faiss_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_find_spec(monkeypatch, emeans_rocm=None)
+    assert detect_emeans_source() == f"faiss-cpu {faiss.__version__}"
+    assert detect_environment().emeans_rocm is False
+
+
+def test_dist_version_missing_distribution_is_none() -> None:
+    assert _backend._dist_version("emeans-haystack-no-such-distribution") is None
 
 
 @pytest.mark.parametrize("outcome", [None, ImportError, ValueError])
@@ -263,13 +285,18 @@ def test_detect_environment_no_device_node_stays_silent(monkeypatch: pytest.Monk
     assert detect_environment().mismatch_reason is None
 
 
+def test_cpu_fit_label_ignores_emeans_rocm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_backend, "emeans_rocm_importable", lambda: True)
+    assert fit().info["emeans_source"] == f"faiss-cpu {faiss.__version__}"
+
+
 def test_fit_model_info_plain_types() -> None:
     info = fit().info
     assert info["backend"] == "cpu"
     assert info["device_name"] == "cpu"
     assert info["precision_used"] == "fp32"
     assert info["assignment_backend"] == "faiss"
-    assert info["emeans_source"] == detect_emeans_source()
+    assert info["emeans_source"] == f"faiss-cpu {faiss.__version__}"
     assert isinstance(info["recipe"], dict)
     assert isinstance(info["faiss_version"], str)
     for key, expected in {
