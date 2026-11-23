@@ -6,7 +6,7 @@
 Example 4: fit e-means on a large corpus on a GPU (synthetic 768-d embeddings).
 
 Run it from integrations/emeans in an env with a GPU build of PyTorch, for example
-`hatch run gpu:run ../../examples/04_large_corpus_gpu.py` (or `gpu-fork:run` with the e-means-rocm fork).
+`hatch run gpu:run ../../examples/04_large_corpus_gpu.py` (or `gpu-fork:run` with emeans-rocm installed).
 It uses device="cuda", so it raises where no GPU backend is usable.
 """
 
@@ -60,7 +60,7 @@ def main() -> None:
     print(f"documents: {len(documents)}")
 
     # On upstream e-means on AMD, bf16 runs in FP32 with one warning and reports gpu-pytorch;
-    # with the e-means-rocm fork or on NVIDIA it runs BF16.
+    # with emeans-rocm or on NVIDIA it runs BF16.
     fitter = EmeansFitter(
         k=args.k,
         model_path=str(out / "large.npz"),
