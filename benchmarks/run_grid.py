@@ -27,6 +27,9 @@ NS = (100_000, 1_000_000)
 KS = (1024, 4096, 16384, 65536)
 SEEDS = (0, 1, 2)
 SWEEP_PASSES = (1, 2, 5, 10, 25)
+# Narrowed scope (owner, 2026-11-23): scikit-learn runs at 100k only. faiss is the Lloyd baseline at every size;
+# scikit-learn at 1M would cost most of the CPU grid's 30-40 h for a reference point that adds little.
+METHOD_NS: dict[str, tuple[int, ...]] = {"sklearn-lloyd": (100_000,)}
 # (data, n, k): 1M x 16384 is above 1e10, so Lloyd gets sweep points there even when its full run is capped.
 SWEEP_CELLS = (("random", 100_000, 4096), ("cohere", 100_000, 4096), ("cohere", 1_000_000, 16384))
 DEFAULT_CAP_MIN = 60
@@ -105,7 +108,7 @@ def _order(cells: list[Cell], datasets: Sequence[str], methods: Sequence[str]) -
 
 def full_grid(methods: Sequence[str], datasets: Sequence[str], seeds: Sequence[int] = SEEDS) -> list[Cell]:
     """
-    Build the full grid: main cells plus the pass-sweep cells.
+    Build the full grid: main cells plus the pass-sweep cells, minus the sizes ``METHOD_NS`` leaves out.
 
     :param methods: Method names.
     :param datasets: Dataset names (those not registered are left out of the sweep, never invented).
@@ -119,6 +122,7 @@ def full_grid(methods: Sequence[str], datasets: Sequence[str], seeds: Sequence[i
         if data not in datasets:
             continue
         cells += [Cell(m, data, n, k, s, "sweep", float(p)) for m in methods for s in seeds for p in SWEEP_PASSES]
+    cells = [c for c in cells if c.n in METHOD_NS.get(c.method, NS)]
     return _order(cells, list(datasets), list(methods))
 
 

@@ -67,13 +67,20 @@ def _cell(method: str = "emeans-cpu", **kw: Any) -> Cell:
 
 def test_full_grid_shape() -> None:
     cells = [c for c in full_grid(METHODS, ["random"], seeds=(0, 1, 2)) if c.kind == "main"]
-    assert len(cells) == 3 * 1 * 2 * 4 * 3
+    assert len(cells) == 2 * 1 * 2 * 4 * 3 + 1 * 1 * 1 * 4 * 3
     assert all(c.passes is None for c in cells)
     sizes = {c.n * c.k for c in cells}
     assert min(sizes) == 1_024 * 100_000
     assert max(sizes) == 65_536 * 1_000_000
     assert any(s < 1e10 for s in sizes)
     assert any(s > 1e10 for s in sizes)
+
+
+def test_sklearn_runs_at_100k_only() -> None:
+    cells = full_grid(METHODS, ["random", "cohere"], seeds=(0, 1, 2))
+    assert {c.n for c in cells if c.method == "sklearn-lloyd"} == {100_000}
+    assert {c.n for c in cells if c.method == "faiss-lloyd"} == {100_000, 1_000_000}
+    assert ("cohere", 1_000_000, 16384) in {(c.data, c.n, c.k) for c in cells if c.method == "faiss-lloyd"}
 
 
 def test_sweep_cells() -> None:

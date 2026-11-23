@@ -214,6 +214,10 @@ def _protocol() -> list[str]:
         ),
         "- No subsampling: `faiss.Kmeans` `max_points_per_centroid` 2**30, e-means `None`.",
         (
+            "- scikit-learn runs at 100k rows only, to save time: `faiss-lloyd` is the Lloyd baseline at every "
+            "size, so the 1M rows have no scikit-learn entries."
+        ),
+        (
             "- Final objective: mean squared distance to the nearest centroid, from one exact FP32 CPU scorer "
             "(`faiss.IndexFlatL2`), never a library's own objective. The `vs faiss` column is the relative "
             "difference to the Lloyd `faiss-lloyd` median objective in the same cell."
