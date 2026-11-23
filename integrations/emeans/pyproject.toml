@@ -83,7 +83,8 @@ integration = 'pytest -m integration {args:tests}'
 # Accepted risk: with `unsafe-best-match`, any package published on the AMD index with a higher version than on
 # PyPI wins (dependency confusion). Hatch installs extra-dependencies as plain `uv pip` requirements, outside uv's
 # project mode, so an explicit `[tool.uv.index]` + `[tool.uv.sources]` pin for torch is not relied on here. The env is
-# never built in CI, torch is pinned to an exact +rocm version, and the AMD index is a vendor index.
+# never built in CI, torch is pinned to an exact +rocm version, and the AMD index is a vendor index. The `gpu-fork`
+# env below applies the same reasoning to its exact `emeans-rocm` pin.
 [tool.hatch.envs.gpu]
 template = "test"
 extra-dependencies = ["torch[device-{env:EMEANS_ROCM_GFX:gfx1200}]==2.14.0+rocm10.1.0"]
@@ -94,18 +95,14 @@ gpu-tests = 'pytest -m gpu {args:tests}'
 unit = 'pytest -m "not integration" {args:tests}'
 run = "python {args}"
 
-# Local only: needs EMEANS_ROCM_FORK pointing at the e-means-rocm clone. `link` copies the fork's e_means over
-# the faiss-cpu copy (kept as a backup); `unlink` puts the faiss-cpu copy back. Re-run `link` after editing the
-# fork or recreating the env. Run `unlink` BEFORE upgrading, reinstalling or uninstalling faiss-cpu, then `link`.
+# Local only: installs `emeans-rocm` 0.2.5 from PyPI on top of the ROCm torch of the `gpu` env. A child env's
+# `extra-dependencies` replace the template list, so the torch pin is repeated here. The accepted dependency-confusion
+# risk of the `gpu` env (unsafe-best-match with the AMD extra index) also covers `emeans-rocm`: it is pinned exactly,
+# PyPI is the intended source, the AMD index returned 404 for `emeans-rocm` on 2026-11-23, and the pin is revisited
+# by hand, never auto-bumped.
 [tool.hatch.envs.gpu-fork]
 template = "gpu"
-
-[tool.hatch.envs.gpu-fork.scripts]
-link = "python ../../scripts/link_fork.py"
-unlink = "python ../../scripts/link_fork.py --restore"
-gpu-tests = 'pytest -m gpu {args:tests}'
-unit = 'pytest -m "not integration" {args:tests}'
-run = "python {args}"
+extra-dependencies = ["torch[device-{env:EMEANS_ROCM_GFX:gfx1200}]==2.14.0+rocm10.1.0", "emeans-rocm==0.2.5"]
 
 [tool.mypy]
 install_types = true
