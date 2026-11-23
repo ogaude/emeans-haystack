@@ -2,7 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end fits on a real GPU (local only; needs PyTorch with a visible GPU)."""
+"""End-to-end fits on a real GPU (local only; needs PyTorch with a visible GPU).
+
+emeans-rocm on NVIDIA is not verified on hardware: these tests only run on the owner's AMD GPU.
+They stay vendor-gated, so on other hardware they skip rather than fail.
+"""
 
 import logging
 from collections.abc import Callable
@@ -44,7 +48,7 @@ def _require_rocm_upstream() -> None:
     if torch.version.hip is None:
         pytest.skip("ROCm expectation")
     if emeans_rocm_importable():
-        pytest.skip("needs the stock faiss.contrib.e_means engine")
+        pytest.skip("needs stock faiss-cpu e-means (emeans-rocm installed)")
 
 
 def _patch_train_oom(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -154,7 +158,7 @@ def test_emeans_rocm_reduced_precision(
     tmp_path: Path, make_docs: MakeDocs, caplog: pytest.LogCaptureFixture, precision: str, expected: str
 ) -> None:
     if torch.version.hip is None or not emeans_rocm_importable():
-        pytest.skip("needs the emeans-rocm package on ROCm")
+        pytest.skip("needs emeans-rocm on ROCm")
     docs = make_docs(2000, d=64, n_clusters=16)
     with caplog.at_level(logging.DEBUG):
         stats = _fitter(tmp_path, precision=precision).run(documents=docs)["stats"]
@@ -168,7 +172,7 @@ def test_fp16_out_of_range_embeddings_train_in_fp32(
     tmp_path: Path, make_docs: MakeDocs, caplog: pytest.LogCaptureFixture
 ) -> None:
     if torch.version.hip is None or not emeans_rocm_importable():
-        pytest.skip("needs the emeans-rocm package on ROCm")
+        pytest.skip("needs emeans-rocm on ROCm")
     docs = make_docs(2000, d=64, n_clusters=16, unit=False)
     docs = [Document(content=d.content, embedding=[v * 1e5 for v in d.embedding or []]) for d in docs]
     with caplog.at_level(logging.DEBUG):
@@ -250,7 +254,7 @@ def _has_memory_estimate() -> bool:
 
 def test_memory_estimate_recorded_with_emeans_rocm(tmp_path: Path, make_docs: MakeDocs) -> None:
     if not _has_memory_estimate():
-        pytest.skip("needs an e-means with memory_estimate (the emeans-rocm package)")
+        pytest.skip("needs an e-means with memory_estimate (emeans-rocm)")
     stats = _fitter(tmp_path).run(documents=make_docs(2000, d=64, n_clusters=16))["stats"]
     assert stats["backend"].startswith("gpu-")
     assert isinstance(stats["memory_estimate_bytes"], int)
@@ -262,7 +266,7 @@ def test_auto_falls_back_to_cpu_when_estimate_exceeds_free(
     tmp_path: Path, make_docs: MakeDocs, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     if not _has_memory_estimate():
-        pytest.skip("needs an e-means with memory_estimate (the emeans-rocm package)")
+        pytest.skip("needs an e-means with memory_estimate (emeans-rocm)")
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *_a, **_k: (1, 16 * 2**30))
     fitter = _fitter(tmp_path, device="auto", gpu_threshold=0)
     with caplog.at_level(logging.DEBUG):
