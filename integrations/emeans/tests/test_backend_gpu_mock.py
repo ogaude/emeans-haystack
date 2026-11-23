@@ -3,14 +3,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib
+import importlib.util
 import logging
 import sys
 import threading
 import types
 from collections.abc import Callable
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 from typing import Any, ClassVar
 
+import faiss
 import numpy as np
 import pytest
 from haystack import Document
@@ -733,9 +736,24 @@ class FakeTensor:
     def numpy(self) -> np.ndarray:
         return self.array
 
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.array.shape
+
+
+class ProbeRows(np.ndarray):
+    """Stands in for the probe's random torch tensor."""
+
+    def norm(self, dim: int, keepdim: bool) -> "ProbeRows":
+        return np.linalg.norm(self, axis=dim, keepdims=keepdim).view(ProbeRows)
+
+    def half(self) -> "ProbeRows":
+        return self
+
 
 class FakeEngine:
     instances: ClassVar[list["FakeEngine"]] = []
+    assignment_backend: ClassVar[str] = "triton"
 
     def __init__(self, d: int, k: int, **kwargs: Any) -> None:
         self.d, self.k, self.kwargs = d, k, kwargs
@@ -743,7 +761,7 @@ class FakeEngine:
         self.n_splits = 0
         self.iteration_stats: list[dict[str, Any]] = []
         self.recipe = {
-            "assignment_backend": "triton",
+            "assignment_backend": self.assignment_backend,
             "representation": "torch.float32",
             "nepochs": 1.0,
             "batch_size": 64,
@@ -756,10 +774,40 @@ class FakeEngine:
         return FakeTensor(np.random.default_rng(0).normal(size=(self.k, self.d)).astype(np.float32)), None
 
 
-class FakeGpu:
-    """A fake torch plus a fake faiss.contrib.e_means, installed into sys.modules."""
+def _find_spec_without_emeans_rocm() -> Callable[..., ModuleSpec | None]:
+    real = importlib.util.find_spec
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, free: int = GIB, estimate: Any = GIB) -> None:
+    def fake(name: str, *args: Any) -> ModuleSpec | None:
+        if name == "emeans_rocm":
+            return None
+        return real(name, *args)
+
+    return fake
+
+
+class StockEngine(FakeEngine):
+    """Recorded by the stock faiss.contrib.e_means shadow."""
+
+
+class RocmEngine(FakeEngine):
+    """Recorded by the fake emeans_rocm module."""
+
+
+class FakeGpu:
+    """A fake torch plus a stock faiss.contrib.e_means shadow and, optionally, a fake emeans_rocm, in sys.modules.
+
+    `emeans_rocm` is the installed version string, `None` for an installed package without metadata, or `False`
+    when the package is not installed.
+    """
+
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        free: int = GIB,
+        estimate: Any = GIB,
+        emeans_rocm: str | bool | None = "0.2.5",
+    ) -> None:
         # The CPU fallback imports e-means submodules lazily; load them before the fake package shadows the real one.
         importlib.import_module("faiss.contrib.e_means.e_means_spherical")
         FakeEngine.instances = []
@@ -783,12 +831,19 @@ class FakeGpu:
             float16="float16",
             bfloat16="bfloat16",
             from_numpy=from_numpy,
+            Generator=lambda **_kwargs: types.SimpleNamespace(manual_seed=lambda _seed: None),
+            randn=lambda rows, cols, **_kwargs: np.ones((rows, cols), dtype=np.float32).view(ProbeRows),
+            isfinite=lambda tensor: types.SimpleNamespace(all=lambda: np.isfinite(tensor.array).all()),
             cuda=types.SimpleNamespace(mem_get_info=mem_get_info, synchronize=lambda: None, empty_cache=lambda: None),
             version=types.SimpleNamespace(hip=None, cuda="12.8"),
             OutOfMemoryError=FakeOutOfMemoryError,
             are_deterministic_algorithms_enabled=lambda: False,
         )
-        self.e_means = types.SimpleNamespace(QuantizedEmeans=FakeEngine, Emeans=FakeEngine)
+        self.e_means = types.SimpleNamespace(QuantizedEmeans=StockEngine, Emeans=StockEngine)
+        self.rocm = types.ModuleType("emeans_rocm")
+        self.rocm.__spec__ = ModuleSpec("emeans_rocm", None)
+        self.rocm.QuantizedEmeans = RocmEngine  # type: ignore[attr-defined]
+        self.rocm.Emeans = RocmEngine  # type: ignore[attr-defined]
         if estimate is not None:
 
             def memory_estimate(*args: Any, **kwargs: Any) -> int:
@@ -798,11 +853,15 @@ class FakeGpu:
                 return int(estimate)
 
             self.e_means.memory_estimate = memory_estimate
+            self.rocm.memory_estimate = memory_estimate  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "torch", self.torch)
         monkeypatch.setitem(sys.modules, "faiss.contrib.e_means", self.e_means)
-        monkeypatch.setattr(_backend, "emeans_rocm_importable", lambda: True)
-        monkeypatch.setattr(_backend, "_dist_version", lambda _dist: "0.2.5")
-        monkeypatch.setattr(_backend, "gpu_engine", lambda: self.e_means)
+        if emeans_rocm is not False:
+            monkeypatch.setitem(sys.modules, "emeans_rocm", self.rocm)
+            monkeypatch.setattr(_backend, "_dist_version", lambda _dist: emeans_rocm)  # type: ignore[arg-type,return-value]
+        else:
+            monkeypatch.delitem(sys.modules, "emeans_rocm", raising=False)
+            monkeypatch.setattr(importlib.util, "find_spec", _find_spec_without_emeans_rocm())
 
 
 def run_fit(
@@ -948,3 +1007,85 @@ def test_cpu_fit_info_memory_and_fallback_keys() -> None:
     ).info
     assert info["memory_estimate_bytes"] is None
     assert info["fallback_reason"] == "some reason"
+
+
+# engine selection: emeans_rocm on any GPU when installed, stock faiss.contrib.e_means otherwise
+def engines_built() -> set[type]:
+    return {type(engine) for engine in FakeEngine.instances}
+
+
+@pytest.mark.parametrize("is_rocm", [True, False], ids=["amd", "nvidia"])
+@pytest.mark.parametrize(("installed", "engine"), [("0.2.5", RocmEngine), (False, StockEngine)])
+def test_all_gpu_sites_use_the_selected_engine(
+    monkeypatch: pytest.MonkeyPatch, is_rocm: bool, installed: str | bool, engine: type[FakeEngine]
+) -> None:
+    gpu = FakeGpu(monkeypatch, emeans_rocm=installed)
+    gpu.torch.version = types.SimpleNamespace(hip="7.16" if is_rocm else None, cuda=None if is_rocm else "12.8")
+
+    assert _backend._run_probe("auto", "fp32").ok
+    assert engines_built() == {engine}
+
+    FakeEngine.instances = []
+    run_fit(allow_cpu_fallback=False)
+    assert engines_built() == {engine}
+
+    FakeEngine.instances = []
+    _backend.assigner_for(GPU_CHOICE, np.eye(3, 8, dtype=np.float32), spherical=True)
+    assert engines_built() == {engine}
+
+
+@pytest.mark.parametrize("is_rocm", [True, False], ids=["amd", "nvidia"])
+def test_probe_reduced_precision_uses_emeans_class_from_emeans_rocm(
+    monkeypatch: pytest.MonkeyPatch, is_rocm: bool
+) -> None:
+    gpu = FakeGpu(monkeypatch)
+    gpu.torch.version = types.SimpleNamespace(hip="7.16" if is_rocm else None, cuda=None)
+    assert _backend._run_probe("auto", "bf16").ok
+    assert engines_built() == {RocmEngine}
+
+
+def test_nvidia_with_emeans_rocm_picks_nvidia_auto_rung() -> None:
+    probe = FakeProbe()
+    choice = choose(gpu_env(is_rocm=False, emeans_rocm=True), probe)
+    assert (choice.name, choice.requested) == ("nvidia-auto", "auto")
+
+
+@pytest.mark.parametrize(
+    ("installed", "expected"),
+    [("0.2.5", "emeans-rocm 0.2.5"), (None, "emeans-rocm"), (False, f"faiss-cpu {faiss.__version__}")],
+)
+def test_gpu_fit_reports_engine_label(
+    monkeypatch: pytest.MonkeyPatch, installed: str | bool | None, expected: str
+) -> None:
+    FakeGpu(monkeypatch, emeans_rocm=installed)
+    assert run_fit(allow_cpu_fallback=False).info["emeans_source"] == expected
+
+
+def test_model_metadata_carries_emeans_rocm_label(
+    tmp_path: Path, make_docs: Callable[..., list[Document]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeGpu(monkeypatch)
+    monkeypatch.setattr(fitter, "select_backend", lambda **_kwargs: GPU_CHOICE)
+    path = tmp_path / "m.npz"
+    stats = EmeansFitter(device="auto", k=3, spherical=False, model_path=str(path)).run(documents=make_docs(40))[
+        "stats"
+    ]
+    assert stats["emeans_source"] == "emeans-rocm 0.2.5"
+    assert load_model(str(path)).metadata["emeans_source"] == "emeans-rocm 0.2.5"
+
+
+@pytest.mark.parametrize(("installed", "hint"), [("0.2.5", None), (False, HINT)])
+def test_native_rung_hint_depends_on_emeans_rocm(
+    monkeypatch: pytest.MonkeyPatch, installed: str | bool, hint: str | None
+) -> None:
+    gpu = FakeGpu(monkeypatch, emeans_rocm=installed)
+    gpu.torch.version = types.SimpleNamespace(hip="7.16", cuda=None)
+    monkeypatch.setattr(FakeEngine, "assignment_backend", "native")
+    native = BackendChoice("native", "Fake GPU", None, requested="native")
+    x = np.random.default_rng(0).normal(size=(40, 8)).astype(np.float32)
+    x /= np.linalg.norm(x, axis=1, keepdims=True)
+    info = _backend.fit_model(
+        x, k=3, spherical=True, nepochs=1.0, seed=0, max_points_per_centroid=None, backend=native, precision="fp32",
+        allow_cpu_fallback=False,
+    ).info  # fmt: skip
+    assert info["backend_hint"] == hint
