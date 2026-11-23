@@ -92,10 +92,13 @@ Run one env at a time, never concurrently: CPU and GPU runs would disturb each o
 exhaust host RAM. Every run appends to `results/speed.jsonl`. Order:
 
 ```bash
-hatch run bench-gpu-fork:run run_grid.py     # Triton FP32 and BF16
-hatch run bench-gpu:run run_grid.py          # native FP32
-hatch run bench-cpu:run run_grid.py          # e-means CPU, faiss, scikit-learn: the long one
+hatch run bench-gpu-fork:run run_grid.py --methods emeans-gpu-triton-fp32 emeans-gpu-triton-bf16
+hatch run bench-gpu:run run_grid.py --methods emeans-gpu-native-fp32
+hatch run bench-cpu:run run_grid.py --methods emeans-cpu faiss-lloyd sklearn-lloyd   # the long one
 ```
+
+Always pass `--methods`: without it each env runs every method it can, so the GPU envs would also run the CPU
+methods, and those rows would come from the wrong env.
 
 The runs are resumable. Interrupt one (Ctrl-C) and run the same command again; finished cells are skipped.
 Each cell runs in its own fresh process with a hard timeout.
