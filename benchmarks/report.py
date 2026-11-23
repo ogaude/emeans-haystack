@@ -17,6 +17,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from methods import METHODS
 from precision import PCell, precision_grid
 from run_grid import Cell, full_grid
 
@@ -657,7 +658,7 @@ def main() -> int:
     )
     precision_records = load_precision(precision_path)
     if args.check:
-        methods = sorted({r["method"] for r in records})
+        methods = sorted(METHODS)
         datasets = sorted({r["data"] for r in records})
         problems = check(records, full_grid(methods, datasets))
         precision_datasets = sorted({r["data"] for r in precision_records if "data" in r}) or datasets
