@@ -13,7 +13,7 @@ dependencies = [
     "ruff",
     "mypy",
 ]
-env-vars = { OMP_NUM_THREADS = "{env:BENCH_THREADS:10}" }
+env-vars = { OMP_NUM_THREADS = "{env:BENCH_THREADS:10}", OPENBLAS_NUM_THREADS = "{env:BENCH_THREADS:10}" }
 
 [tool.hatch.envs.bench-cpu.scripts]
 run = "python {args}"

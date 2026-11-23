@@ -97,6 +97,19 @@ hatch run bench-gpu:run run_grid.py --methods emeans-gpu-native-fp32
 hatch run bench-cpu:run run_grid.py --methods emeans-cpu faiss-lloyd sklearn-lloyd   # the long one
 ```
 
+To keep the desktop usable during the long CPU run, give it fewer threads, the lowest priority and a memory
+ceiling. A cell that hits the ceiling is killed on its own and recorded as failed, instead of the whole system
+swapping:
+
+```bash
+BENCH_THREADS=8 systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0 \
+  nice -n 19 hatch run bench-cpu:run run_grid.py --methods emeans-cpu faiss-lloyd sklearn-lloyd
+```
+
+Every CPU method gets the same thread count, and each record stores it (`host.omp_threads`). Keep other heavy work
+off the machine while it runs, or the timings suffer. A failed or timed-out cell counts as done on resume: delete
+its lines from `results/speed.jsonl` to run it again.
+
 Always pass `--methods`: without it each env runs every method it can, so the GPU envs would also run the CPU
 methods, and those rows would come from the wrong env.
 
@@ -110,7 +123,9 @@ Options:
 - `--methods ...`, `--data random cohere`, `--seeds 0 1 2`, `--kind main|sweep|all`, `--results PATH`.
 
 Cells in the full grid: `bench-gpu-fork` 186 (96 main, 90 sweep), `bench-gpu` 93 (48 main, 45 sweep),
-`bench-cpu` 279 (144 main, 135 sweep). The 1M-row CPU Lloyd cells dominate the time.
+`bench-cpu` 240 (120 main, 120 sweep). scikit-learn runs at 100k only: faiss is the Lloyd baseline at every
+size, and scikit-learn at 1M would take most of the CPU time for little extra information. The 1M-row faiss cells
+dominate the time.
 
 Estimates from one probe on a 10-core CPU and an RX 9060 XT (they will vary; the run measures them):
 
