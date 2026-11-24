@@ -223,7 +223,8 @@ def _protocol() -> list[str]:
             "difference to the Lloyd `faiss-lloyd` median objective in the same cell."
         ),
         (
-            "- Real data is spherical (scikit-learn runs on unit-norm input, its centroids are not renormalised). "
+            "- Real data is spherical (scikit-learn runs on unit-norm input; its centroids are projected to unit "
+            "length after training so all three methods are scored on the sphere). "
             "The Cohere file's rows are not unit-norm: the harness normalises every row to unit length when it "
             "loads them (the raw norm range is recorded in each run's data provenance). "
             "Random data is Euclidean and is for speed only: Gaussian noise has no cluster structure."

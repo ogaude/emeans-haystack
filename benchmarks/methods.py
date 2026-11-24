@@ -105,7 +105,6 @@ def _train_sklearn_lloyd(
     from sklearn.cluster import KMeans  # noqa: PLC0415
     from sklearn.exceptions import ConvergenceWarning  # noqa: PLC0415
 
-    del spherical  # the input is used as given; centroids are not renormalised
     info: dict[str, Any] = {}
     if passes is None:
         max_iter, tol = 300, 1e-4
@@ -117,7 +116,14 @@ def _train_sklearn_lloyd(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
         km.fit(x)
-    return TrainResult(np.asarray(km.cluster_centers_, dtype=np.float32), float(km.n_iter_), info)
+    centroids = np.asarray(km.cluster_centers_, dtype=np.float32)
+    if spherical:
+        # Plain means of unit rows sit inside the sphere and always score a lower squared L2 than unit centroids,
+        # so they are projected back to unit length to be scored like the spherical e-means and faiss centroids.
+        norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+        centroids = centroids / np.maximum(norms, np.float32(1e-12))
+    info["centroids_normalised"] = spherical
+    return TrainResult(centroids, float(km.n_iter_), info)
 
 
 def _emeans_gpu(expected_backend: str, precision: str) -> Callable[..., TrainResult]:
