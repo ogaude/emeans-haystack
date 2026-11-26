@@ -17,7 +17,7 @@ pip install emeans-haystack            # CPU: brings haystack-ai, faiss-cpu and 
 Until the package is on PyPI, install it from a clone: `pip install ./integrations/emeans`.
 
 Requirements: Python 3.11 or newer, `haystack-ai>=3.5`, `faiss-cpu>=1.16.0` (the first release that contains
-`faiss.contrib.e_means`), `numpy>=1.25`.
+`faiss.contrib.e_means`), `numpy>=2.0`.
 
 **GPU, NVIDIA:**
 
@@ -42,7 +42,52 @@ stock faiss-cpu e-means engine is tried on the GPU in native FP32 before falling
 `stats["emeans_source"]` names the package and version that ran, for example `"emeans-rocm 0.2.5"` or
 `"faiss-cpu 1.16.0"`, and `stats["backend"]` which backend ran.
 
+emeans-rocm 0.2.6 and later revive unused clusters by cost by default (`unused_threshold=None`), so their centroids
+differ from those of 0.2.5; this package passes no `unused_threshold`. The benchmark figures below are for emeans-rocm
+0.2.5.
+
 Importing the package never imports PyTorch. PyTorch is loaded only when a GPU backend is considered.
+
+## Quick Start
+
+A CPU run of fit, cluster and rank on random embeddings; it downloads no model.
+
+```python
+import numpy as np
+from haystack import Document
+from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
+from haystack.document_stores.in_memory import InMemoryDocumentStore
+
+from haystack_integrations.components.preprocessors.emeans import EmeansDocumentClusterer, EmeansFitter
+from haystack_integrations.components.rankers.emeans import EmeansClusterRanker
+
+rng = np.random.default_rng(0)
+docs = [Document(content=f"document {i}", embedding=rng.normal(size=64).tolist()) for i in range(500)]
+
+# Fit once and save the model.
+fitted = EmeansFitter(target_cluster_size=50, model_path="clusters.npz", overwrite=True).run(documents=docs)
+stats = fitted["stats"]
+
+# Assign a stable cluster_id to every document.
+clustered = EmeansDocumentClusterer().run(documents=docs, model_path=fitted["model_path"])["documents"]
+
+# Retrieve, then keep the best document of each cluster.
+store = InMemoryDocumentStore()
+store.write_documents(clustered)
+query_embedding = rng.normal(size=64).tolist()
+retriever = InMemoryEmbeddingRetriever(document_store=store, top_k=50)
+retrieved = retriever.run(query_embedding=query_embedding)["documents"]
+diverse = EmeansClusterRanker(top_k=5).run(documents=retrieved)["documents"]
+
+print(stats["k"], stats["backend"])
+for doc in diverse:
+    print(doc.score, doc.meta["cluster_id"])
+```
+
+In real use a Haystack document embedder, for example `SentenceTransformersDocumentEmbedder` from
+`sentence-transformers-haystack`, sits in front. The full pipelines are in the repository's
+[examples](https://github.com/ogaude/emeans-haystack/tree/main/examples): 01 indexing, 02 diverse retrieval, 03 new
+documents, 04 GPU.
 
 ## Benchmarks
 
@@ -59,3 +104,28 @@ Refer to the general [Contribution Guidelines](https://github.com/deepset-ai/hay
 GPU tests are marked `integration` and `gpu`, so `hatch run test:unit` and CI never run them. They are local
 only: run them with `hatch run gpu:gpu-tests` (upstream e-means) or `hatch run gpu-fork:gpu-tests` (installs
 `emeans-rocm` 0.2.5 from PyPI). They skip when PyTorch sees no GPU.
+
+## License
+
+`emeans-haystack` is distributed under the Apache-2.0 license (see `LICENSE.txt`).
+
+Third-party notices:
+
+- e-means is developed by Meta FAIR and ships in faiss (`faiss.contrib.e_means`) under the MIT license
+  (Copyright (c) Facebook, Inc. and its affiliates). This package depends on faiss-cpu and does not include its code.
+- emeans-rocm (optional, not a dependency) packages Meta's e-means code and is distributed under the MIT license.
+
+## Citation
+
+If you use e-means, cite the paper:
+
+```bibtex
+@misc{bessa2026emeans,
+  title  = {{e-means}: outperforming {k-means} (in one-tenth the epochs)},
+  author = {Bessa, Swann and Mazar{\'e}, Pierre-Emmanuel and Szilvasy, Gergely and
+            Touvron, Hugo and Picard, David and Douze, Matthijs and J{\'e}gou, Herv{\'e}},
+  year   = {2026},
+  note   = {Preprint},
+  url    = {https://arxiv.org/abs/2611.09501}
+}
+```

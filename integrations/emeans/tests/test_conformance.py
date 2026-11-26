@@ -11,6 +11,9 @@ from pathlib import Path
 
 import pytest
 
+from haystack_integrations.components.preprocessors.emeans import EmeansDocumentClusterer, EmeansFitter
+from haystack_integrations.components.rankers.emeans import EmeansClusterRanker
+
 INTEGRATION_ROOT = Path(__file__).resolve().parent.parent
 SCANNED_DIRS = [
     INTEGRATION_ROOT / "src",
@@ -123,13 +126,11 @@ def _pyproject() -> dict:
 def test_no_own_env_vars() -> None:
     found = _env_var_literals()
     assert found, "the environment scan found nothing, so its patterns are dead"
-    assert found <= ALLOWED_ENV_VARS, f"unexpected environment variables read or set: {sorted(found - ALLOWED_ENV_VARS)}"
+    unexpected = sorted(found - ALLOWED_ENV_VARS)
+    assert not unexpected, f"unexpected environment variables read or set: {unexpected}"
 
 
 def test_no_run_async() -> None:
-    from haystack_integrations.components.preprocessors.emeans import EmeansDocumentClusterer, EmeansFitter
-    from haystack_integrations.components.rankers.emeans import EmeansClusterRanker
-
     for component in (EmeansFitter, EmeansDocumentClusterer, EmeansClusterRanker):
         assert not hasattr(component, "run_async"), f"{component.__name__} must stay synchronous"
 
