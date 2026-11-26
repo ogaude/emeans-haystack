@@ -381,10 +381,11 @@ def _record_context(record: dict[str, Any]) -> dict[str, Any]:
 
     versions = _versions()
     versions.update(_gpu_versions())
-    for entry in record.get("variants", {}).values():
-        if entry.get("emeans_source"):
-            versions["emeans_source"] = entry["emeans_source"]
-            break
+    # The label comes from the fits. Variants that ran on different engines (a fallback) get every engine, sorted.
+    variants = record.get("variants", {}).values()
+    sources = sorted({entry["emeans_source"] for entry in variants if entry.get("emeans_source")})
+    if sources:
+        versions["emeans_source"] = sources[0] if len(sources) == 1 else "mixed: " + ", ".join(sources)
     host = _host()
     host["gpu"] = _gpu_name()
     record["host"] = host

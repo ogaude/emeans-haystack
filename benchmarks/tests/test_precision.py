@@ -200,3 +200,19 @@ def test_precision_record_versions_follow_variant(monkeypatch: pytest.MonkeyPatc
     assert record["versions"]["emeans_source"] == "faiss-cpu 1.16.0"
     record = precision._record_context(run_cell(_cell(), fit=_fake_fit(), d=16))
     assert record["versions"]["emeans_source"] == "emeans-rocm 0.2.5"
+
+
+def test_precision_record_versions_name_every_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    import worker  # noqa: PLC0415
+
+    monkeypatch.setattr(worker, "_gpu_versions", dict)
+    monkeypatch.setattr(worker, "_gpu_name", lambda: "fake gpu")
+    monkeypatch.setattr(worker, "_versions", lambda method=None: {"emeans_source": None})  # noqa: ARG005
+    variants = {
+        "fp32_rerun": {"emeans_source": "emeans-rocm 0.2.5"},
+        "fp16": {"emeans_source": "faiss-cpu 1.16.0"},
+        "bf16": {"emeans_source": "emeans-rocm 0.2.5"},
+        "round16": {"emeans_source": None},
+    }
+    record = precision._record_context({"variants": variants})
+    assert record["versions"]["emeans_source"] == "mixed: emeans-rocm 0.2.5, faiss-cpu 1.16.0"
