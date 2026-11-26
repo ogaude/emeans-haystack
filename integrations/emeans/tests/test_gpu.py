@@ -2,10 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end fits on a real GPU (local only; needs PyTorch with a visible GPU).
+"""End-to-end fits on a real GPU (local only; needs PyTorch with a visible GPU, otherwise every test skips).
 
-emeans-rocm on NVIDIA is not verified on hardware: these tests only run on the owner's AMD GPU.
-They stay vendor-gated, so on other hardware they skip rather than fail.
+Only some tests are gated on AMD; the rest run on any GPU that PyTorch sees, NVIDIA included:
+
+- ROCm only (skip when `torch.version.hip` is None): `test_fit_cuda_runs_on_gpu`, the emeans-rocm tests
+  (`test_emeans_rocm_reduced_precision`, `test_fp16_out_of_range_embeddings_train_in_fp32`, which also need
+  emeans-rocm installed) and the upstream-AMD tests (`test_explicit_bf16_on_native_degrades_once`,
+  `test_upstream_amd_*`, which also need emeans-rocm absent).
+- Any GPU: every other test. They assert vendor-neutral behaviour (GPU backend chosen, unit-norm centroids,
+  determinism, OOM propagation, GPU and CPU assignment agree, memory estimate). With emeans-rocm installed they run
+  its engine, whose NVIDIA path has not been re-run on hardware, so a failure there on NVIDIA is a real finding
+  about emeans-rocm, not a test bug. The memory-estimate tests are gated on the engine having `memory_estimate`.
 """
 
 import logging
