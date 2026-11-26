@@ -156,15 +156,22 @@ def test_worker_gpu_fields(tmp_path: Path) -> None:
 
 
 def _run_worker_in_process(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path, name: str, info: dict
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    name: str,
+    info: dict,
+    warm_info: dict | None = None,
 ) -> dict:
     import worker  # noqa: PLC0415
     from methods import MethodSpec, TrainResult  # noqa: PLC0415
 
     real = METHODS[name]
+    # The first call is the cold fit; with `warm_info` set, a second (warm) fit returns that info.
+    infos = [info] if warm_info is None else [info, warm_info]
 
     def train(x: np.ndarray, init: np.ndarray, **kwargs: object) -> TrainResult:  # noqa: ARG001
-        return TrainResult(init.astype(np.float32), 1.0, dict(info))
+        return TrainResult(init.astype(np.float32), 1.0, dict(infos.pop(0)))
 
     fake = MethodSpec(name, real.engine, real.device, real.default_passes, train, lambda: None)
     monkeypatch.setattr(worker, "METHODS", {**METHODS, name: fake})
@@ -172,6 +179,7 @@ def _run_worker_in_process(
     monkeypatch.setattr(worker, "_gpu_versions", lambda: {"torch": None, "hip": None})
     monkeypatch.setattr(worker, "_gpu_name", lambda: "fake gpu")
     argv = ["worker.py", "--method", name, "--data", "random", "--n", "500", "--d", "8", "--k", "4", "--seed", "0"]
+    argv += ["--warm", "no" if warm_info is None else "yes"]
     monkeypatch.setattr(sys, "argv", [*argv, "--scratch", str(tmp_path)])
     assert worker.main() == 0
     return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -184,6 +192,28 @@ def test_worker_record_uses_fit_engine_label(
     rec = _run_worker_in_process(monkeypatch, capsys, tmp_path, "emeans-gpu-triton-bf16", info)
     assert rec["versions"]["emeans_source"] == "faiss-cpu 0.0.1-fit"
     assert rec["info"]["emeans_source"] == "faiss-cpu 0.0.1-fit"
+
+
+def test_worker_record_labels_a_warm_fit_on_another_engine(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    cold = {"emeans_source": "emeans-rocm 0.2.5", "train_seconds": 0.1}
+    warm = {"emeans_source": "faiss-cpu 1.16.0", "train_seconds": 0.1}
+    rec = _run_worker_in_process(monkeypatch, capsys, tmp_path, "emeans-gpu-triton-bf16", cold, warm)
+    assert rec["warm_status"] == "measured"
+    assert rec["info"]["emeans_source"] == "emeans-rocm 0.2.5"
+    assert rec["info"]["emeans_source_warm"] == "faiss-cpu 1.16.0"
+    assert rec["versions"]["emeans_source"] == "mixed: emeans-rocm 0.2.5, faiss-cpu 1.16.0"
+
+
+def test_worker_record_warm_fit_on_same_engine_keeps_one_label(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    info = {"emeans_source": "emeans-rocm 0.2.5", "train_seconds": 0.1}
+    rec = _run_worker_in_process(monkeypatch, capsys, tmp_path, "emeans-gpu-triton-bf16", info, dict(info))
+    assert rec["warm_status"] == "measured"
+    assert "emeans_source_warm" not in rec["info"]
+    assert rec["versions"]["emeans_source"] == "emeans-rocm 0.2.5"
 
 
 def test_worker_record_lloyd_keeps_no_engine(

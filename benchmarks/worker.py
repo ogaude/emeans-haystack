@@ -177,6 +177,12 @@ def main() -> int:
     # The label comes from the fit itself: a GPU fit that fell back to the stock engine reports that engine.
     if info.get("emeans_source"):
         versions["emeans_source"] = info["emeans_source"]
+    # The warm fit can take another engine (a probe fallback); then `warm_s` is not from the cold fit's engine.
+    warm_source = warm_result.info.get("emeans_source") if warm_result is not None else None
+    if warm_source and warm_source != info.get("emeans_source"):
+        info["emeans_source_warm"] = warm_source
+        cold_source = info.get("emeans_source") or "not recorded"
+        versions["emeans_source"] = "mixed: " + ", ".join(sorted({cold_source, warm_source}))
     host = _host()
     if is_gpu:
         versions.update(_gpu_versions())
