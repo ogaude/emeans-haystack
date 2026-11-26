@@ -317,3 +317,23 @@ def test_fit_init_centroids_on_gpu() -> None:
     assert first.shape == (16, 32)
     np.testing.assert_array_equal(first, again)
     assert not np.array_equal(first, other)
+
+
+def test_failing_emeans_rocm_falls_back_to_the_stock_gpu_engine(
+    tmp_path: Path, make_docs: MakeDocs, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    if not _backend.emeans_rocm_enabled():
+        pytest.skip("needs emeans-rocm installed")
+    msg = "fake emeans-rocm failure"
+
+    def _broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(gpu_engine().Emeans, "train", _broken)  # QuantizedEmeans subclasses Emeans
+    with caplog.at_level(logging.DEBUG):
+        stats = _fitter(tmp_path).run(documents=make_docs(2000, d=64, n_clusters=16))["stats"]
+    assert stats["backend"] == "gpu-pytorch"
+    assert stats["emeans_source"].startswith("faiss-cpu ")
+    assert msg in stats["fallback_reason"]
+    assert "stock faiss e-means engine" in stats["fallback_reason"]
+    assert stats["fallback_reason"] in [r.getMessage() for r in _warnings(caplog)]

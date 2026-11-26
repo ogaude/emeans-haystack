@@ -1057,24 +1057,123 @@ class BrokenEmeansRocmFinder:
         return None
 
 
-def test_broken_emeans_rocm_import_falls_back_to_cpu_on_auto(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    FakeGpu(monkeypatch)
+def _break_emeans_rocm_import(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delitem(sys.modules, "emeans_rocm")
     monkeypatch.setattr(sys, "meta_path", [BrokenEmeansRocmFinder(), *sys.meta_path])
     monkeypatch.setattr(_backend, "emeans_rocm_importable", lambda: True)  # found on the path, fails to import
-    env = gpu_env(is_rocm=True, emeans_rocm=True, hip_version="7.16")
+
+
+AMD_EMEANS_ROCM = {"is_rocm": True, "emeans_rocm": True, "hip_version": "7.16"}
+
+
+@pytest.mark.parametrize("device", ["auto", "cuda"])
+def test_broken_emeans_rocm_import_falls_back_to_the_stock_gpu_engine(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, device: str
+) -> None:
+    FakeGpu(monkeypatch)
+    _break_emeans_rocm_import(monkeypatch)
+    env = gpu_env(**AMD_EMEANS_ROCM)
+    with caplog.at_level(logging.DEBUG):
+        choice = select_backend(device=device, n=100, k=10, gpu_threshold=1, env=env)
+    assert (choice.name, choice.requested, choice.engine) == ("native-stock", "native", _backend.STOCK_ENGINE)
+    reason = choice.fallback_reason
+    assert reason is not None
+    for fragment in ("rocm-triton: ImportError", "native: ImportError", "stock faiss e-means engine"):
+        assert fragment in reason
+    assert engines_built() == {StockEngine}  # the stock probe ran; nothing was built from emeans_rocm
+    assert [w.getMessage() for w in warnings_in(caplog)] == [reason]
+    # A broken install is not transient: it is remembered, so the next selection does not probe again.
+    assert not _backend._is_transient_failure(reason)
+
+    FakeEngine.instances = []
+    monkeypatch.setattr(FakeEngine, "assignment_backend", "native")
+    x = np.random.default_rng(0).normal(size=(40, 8)).astype(np.float32)
+    x /= np.linalg.norm(x, axis=1, keepdims=True)
+    info = _backend.fit_model(
+        x, k=3, spherical=True, nepochs=1.0, seed=0, max_points_per_centroid=None, backend=choice, precision="fp32",
+    ).info  # fmt: skip
+    assert engines_built() == {StockEngine}
+    assert info["backend"] == "gpu-pytorch"
+    assert info["emeans_source"] == f"faiss-cpu {faiss.__version__}"
+    assert info["fallback_reason"] == reason
+
+    FakeEngine.instances = []
+    _backend.assigner_for(choice, np.eye(3, 8, dtype=np.float32), spherical=True)
+    assert engines_built() == {StockEngine}
+
+
+class BrokenEngine(FakeEngine):
+    def train(self, _x: FakeTensor, init_centroids: object = None) -> tuple[FakeTensor, None]:  # noqa: ARG002
+        msg = "no kernel image is available"
+        raise RuntimeError(msg)
+
+
+def test_emeans_rocm_and_stock_engine_both_failing_falls_back_to_cpu(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    gpu = FakeGpu(monkeypatch)
+    gpu.rocm.QuantizedEmeans = BrokenEngine  # type: ignore[attr-defined]
+    gpu.e_means.QuantizedEmeans = BrokenEngine
+    env = gpu_env(**AMD_EMEANS_ROCM)
     with caplog.at_level(logging.DEBUG):
         choice = select_backend(device="auto", n=100, k=10, gpu_threshold=1, env=env)
     assert choice.name == "cpu"
+    reason = choice.fallback_reason
+    assert reason is not None
+    for rung in ("rocm-triton", "native", "native-stock"):
+        assert f"{rung}: RuntimeError: no kernel image is available" in reason
+    assert [w.getMessage() for w in warnings_in(caplog)] == [reason]
+    with pytest.raises(RuntimeError, match="native-stock: RuntimeError"):
+        select_backend(device="cuda", n=100, k=10, gpu_threshold=1, env=env)
+
+
+def test_failed_engine_memory_is_released_before_the_stock_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    gpu = FakeGpu(monkeypatch)
+    events: list[str] = []
+
+    class RecordingBroken(BrokenEngine):
+        def __init__(self, d: int, k: int, **kwargs: Any) -> None:
+            events.append("emeans-rocm built")
+            super().__init__(d, k, **kwargs)
+
+    class RecordingStock(StockEngine):
+        def __init__(self, d: int, k: int, **kwargs: Any) -> None:
+            events.append("stock built")
+            super().__init__(d, k, **kwargs)
+
+    gpu.rocm.QuantizedEmeans = RecordingBroken  # type: ignore[attr-defined]
+    gpu.e_means.QuantizedEmeans = RecordingStock
+    gpu.torch.cuda.empty_cache = lambda: events.append("empty_cache")
+    monkeypatch.setattr(_backend.gc, "collect", lambda: events.append("gc") or 0)
+    choice = select_backend(device="auto", n=100, k=10, gpu_threshold=1, env=gpu_env(**AMD_EMEANS_ROCM))
+    assert choice.name == "native-stock"
+    stock = events.index("stock built")
+    assert events[stock - 2 : stock] == ["gc", "empty_cache"]  # released after the last failed emeans-rocm probe
+    assert events.count("emeans-rocm built") == 2  # rocm-triton and native
+
+
+def test_stock_rung_is_tried_after_every_emeans_rocm_rung_fails() -> None:
+    probe = FakeProbe({"rocm-triton": fail("t"), "native": fail("n")})
+    choice = choose(gpu_env(**AMD_EMEANS_ROCM), probe)
+    assert (choice.name, choice.engine) == ("native-stock", _backend.STOCK_ENGINE)
+    assert [call[0] for call in probe.calls] == ["rocm-triton", "native", "native-stock"]
     assert choice.fallback_reason is not None
-    assert "ImportError" in choice.fallback_reason
-    assert "rocm-triton" in choice.fallback_reason
-    assert not FakeEngine.instances
-    assert len(warnings_in(caplog)) == 1
-    # A broken install is not transient: it is remembered, so the next selection does not probe again.
-    assert not _backend._is_transient_failure(choice.fallback_reason)
+    assert "rocm-triton: t" in choice.fallback_reason
+    assert "native: n" in choice.fallback_reason
+
+
+def test_stock_rung_is_skipped_without_emeans_rocm() -> None:
+    probe = FakeProbe({"nvidia-auto": fail("a"), "nvidia-triton": fail("b"), "native": fail("c")})
+    choice = choose(gpu_env(), probe)
+    assert choice.name == "cpu"
+    assert [call[0] for call in probe.calls] == ["nvidia-auto", "nvidia-triton", "native"]
+    assert choice.fallback_reason is not None
+    assert "native-stock" not in choice.fallback_reason
+
+
+def test_emeans_rocm_rung_success_carries_no_reason() -> None:
+    choice = choose(gpu_env(**AMD_EMEANS_ROCM), FakeProbe())
+    assert (choice.name, choice.engine, choice.fallback_reason) == ("rocm-triton", None, None)
 
 
 def test_nvidia_with_emeans_rocm_picks_nvidia_auto_rung() -> None:

@@ -5,6 +5,7 @@
 """The only module that touches the e-means engine; PyTorch is imported only inside functions, when a GPU is used."""
 
 import contextlib
+import gc
 import importlib
 import importlib.metadata
 import importlib.util
@@ -55,8 +56,9 @@ class BackendChoice:
 
     name: str
     device_name: str
-    fallback_reason: str | None
+    fallback_reason: str | None  # for a GPU choice: why a preferred GPU engine or rung was not used, else None
     requested: str | None = None  # the e-means `assignment_backend` of the chosen GPU rung; None means CPU
+    engine: str | None = None  # GPU engine: None for `gpu_engine()`'s default, STOCK_ENGINE for the stock one
 
 
 class GpuRung(Protocol):
@@ -140,13 +142,22 @@ def emeans_rocm_enabled() -> bool:
     return False
 
 
-def gpu_engine() -> Any:
+STOCK_ENGINE = "faiss"  # names the stock `faiss.contrib.e_means` engine in `BackendChoice.engine`
+
+
+def gpu_engine(engine: str | None = None) -> Any:
     """
     Return the module that provides the GPU `Emeans` and `QuantizedEmeans` classes.
 
-    `emeans_rocm` is used on any GPU when it is importable and inside `_EMEANS_ROCM_SUPPORTED`, otherwise
-    `faiss.contrib.e_means`. CPU paths must not call this: they use the stock `NumpyEmeans`.
+    By default `emeans_rocm` is used on any GPU when it is importable and inside `_EMEANS_ROCM_SUPPORTED`, otherwise
+    `faiss.contrib.e_means`. With `engine=STOCK_ENGINE`, `faiss.contrib.e_means` is always used: that is the GPU
+    fallback when every emeans-rocm rung fails its probe. CPU paths must not call this: they use the stock
+    `NumpyEmeans`.
+
+    :param engine: `None` for the default choice, or `STOCK_ENGINE`.
     """
+    if engine == STOCK_ENGINE:
+        return importlib.import_module("faiss.contrib.e_means")
     if emeans_rocm_enabled():
         return importlib.import_module("emeans_rocm")
     return importlib.import_module("faiss.contrib.e_means")
@@ -206,6 +217,11 @@ def detect_emeans_source() -> str:
     return _cpu_source()
 
 
+def _engine_source(engine: str | None) -> str:
+    """Return the label of the GPU engine `engine` (see `gpu_engine`)."""
+    return _cpu_source() if engine == STOCK_ENGINE else detect_emeans_source()
+
+
 @dataclass(frozen=True)
 class ProbeResult:
     """Outcome of the tiny training run that checks a GPU rung works."""
@@ -234,17 +250,18 @@ _PROBE_DIM = 64
 _PROBE_K = 16
 
 
-def _run_probe(requested: str, precision: str) -> ProbeResult:
+def _run_probe(requested: str, precision: str, engine: str | None = None) -> ProbeResult:
     # Both spherical modes are probed: e-means takes mode-dependent code paths, and the verdict is reused for
     # every later fit and assignment on this rung, whatever its mode.
     torch = importlib.import_module("torch")
     x = None
     em = None
     centroids = None
+    failed = True
     try:
         # Inside the try: a broken engine install (e.g. a failing `import emeans_rocm`) is a recorded probe
-        # failure, so `device="auto"` falls back to CPU instead of crashing.
-        e_means = gpu_engine()
+        # failure, so `device="auto"` falls back to the next rung or the CPU instead of crashing.
+        e_means = gpu_engine(engine)
         label = ""
         for spherical in (True, False):
             generator = torch.Generator(device="cuda")
@@ -271,6 +288,7 @@ def _run_probe(requested: str, precision: str) -> ProbeResult:
                 return ProbeResult(False, None, f"the {mode} probe produced non-finite or misshapen centroids")
             if spherical:
                 label = str(em.recipe["assignment_backend"])
+        failed = False
         return ProbeResult(True, label, None)
     except torch.OutOfMemoryError:
         raise
@@ -278,16 +296,22 @@ def _run_probe(requested: str, precision: str) -> ProbeResult:
         return ProbeResult(False, None, f"{type(error).__name__}: {error}")
     finally:
         del x, em, centroids
+        if failed:
+            # A failed engine's traceback frames can keep its GPU tensors alive in reference cycles; collect them so
+            # the next rung (possibly another engine) starts with that memory released.
+            gc.collect()
         torch.cuda.empty_cache()
 
 
-def probe(rung_name: str, requested: str, precision: str) -> ProbeResult:
+def probe(rung_name: str, requested: str, precision: str, engine: str | None = None) -> ProbeResult:
     """
     Run the tiny training probe once per process for each rung, assignment backend and precision; remember it.
 
     :param rung_name: Name of the rung being probed.
     :param requested: The e-means `assignment_backend` to probe.
     :param precision: `"fp32"`, `"bf16"` or `"fp16"`.
+    :param engine: GPU engine to probe (see `gpu_engine`); rungs on different engines have different names, so the
+        memo key stays `(rung_name, requested, precision)`.
     :raises torch.OutOfMemoryError: If the GPU is out of memory; this is never remembered.
 
     Probes for the same key run once at a time; probes for different keys do not wait for each other. A failure
@@ -304,7 +328,7 @@ def probe(rung_name: str, requested: str, precision: str) -> ProbeResult:
             cached = _PROBE_CACHE.get(key)
         if cached is not None:
             return cached  # another thread probed this key while we waited
-        result = _run_probe(requested, precision)
+        result = _run_probe(requested, precision) if engine is None else _run_probe(requested, precision, engine)
         if result.ok or not _is_transient_failure(result.reason):
             with _PROBE_LOCK:
                 _PROBE_CACHE[key] = result
@@ -325,12 +349,18 @@ def clear_probe_cache() -> None:
         _UNSUPPORTED_WARNED.clear()
 
 
+def _applies_always(_env: EnvInfo) -> bool:
+    return True
+
+
 @dataclass(frozen=True)
 class _Attempt:
     name: str
     requested: str
     gate: Callable[[EnvInfo], str | None]
     probe_fn: ProbeFn
+    engine: str | None = None
+    applies: Callable[[EnvInfo], bool] = _applies_always  # False: skipped without a reason (nothing to report)
 
     def usable(self, env: EnvInfo) -> str | None:
         reason = self.gate(env)
@@ -357,18 +387,35 @@ def _always(_env: EnvInfo) -> str | None:
     return None
 
 
+def _emeans_rocm_is_engine(env: EnvInfo) -> bool:
+    return env.emeans_rocm
+
+
+def _stock_probe(rung_name: str, requested: str, precision: str) -> ProbeResult:
+    return probe(rung_name, requested, precision, engine=STOCK_ENGINE)
+
+
+STOCK_RUNG = "native-stock"
+
+
 def default_rungs(probe_fn: ProbeFn | None = None) -> tuple[GpuRung, ...]:
     """
     Return the GPU ladder in the order it is tried.
 
-    :param probe_fn: Probe to use; the memoised `probe` when omitted.
+    The first four rungs use `gpu_engine()`'s default engine (emeans-rocm when it is enabled). The last one,
+    `native-stock`, runs the stock `faiss.contrib.e_means` native path on the GPU and is tried only when
+    emeans-rocm is the GPU engine, so a GPU on which every emeans-rocm rung fails still runs before the CPU.
+
+    :param probe_fn: Probe to use for every rung; the memoised `probe` (on the rung's engine) when omitted.
     """
     fn = probe_fn if probe_fn is not None else probe
+    stock_fn = probe_fn if probe_fn is not None else _stock_probe
     return (
         _Attempt("rocm-triton", "auto", _needs_emeans_rocm, fn),
         _Attempt("nvidia-auto", "auto", _needs_nvidia, fn),
         _Attempt("nvidia-triton", "triton", _needs_nvidia, fn),
         _Attempt("native", "native", _always, fn),
+        _Attempt(STOCK_RUNG, "native", _always, stock_fn, engine=STOCK_ENGINE, applies=_emeans_rocm_is_engine),
     )
 
 
@@ -552,6 +599,10 @@ def select_backend(
     With `device="auto"`, a GPU out-of-memory error during a rung's probe counts as that rung failing (it is not
     remembered, so later runs probe again); with `device="cuda"` it propagates. Errors from the real fit propagate.
 
+    When emeans-rocm is the GPU engine and every one of its rungs fails, the stock `faiss.contrib.e_means` native
+    rung is tried on the GPU before the CPU (both for `"auto"` and `"cuda"`); the choice then carries
+    `engine=STOCK_ENGINE` and a `fallback_reason` naming the failed rungs, and a warning is logged.
+
     :param device: `"cpu"`, `"cuda"` or `"auto"`.
     :param n: Number of embeddings.
     :param k: Number of clusters.
@@ -584,6 +635,9 @@ def select_backend(
         reasons: list[str] = []
         oom_rungs: list[str] = []
         for rung in rungs:
+            applies = getattr(rung, "applies", None)
+            if applies is not None and not applies(environment):
+                continue
             try:
                 reason = rung.usable(environment)
             except Exception as error:
@@ -596,7 +650,18 @@ def select_backend(
                     logger.warning(
                         "GPU probe ran out of memory on {oom}; using {rung}", oom=", ".join(oom_rungs), rung=rung.name
                     )
-                return BackendChoice(rung.name, environment.device_name or "cuda", None, requested=rung.requested)
+                engine = getattr(rung, "engine", None)
+                note = None
+                if engine == STOCK_ENGINE and reasons:
+                    note = (
+                        f"no emeans-rocm GPU backend usable: {'; '.join(reasons)}; "
+                        f"using the stock faiss e-means engine on the GPU ({rung.name})"
+                    )
+                    if warn:
+                        logger.warning("{reason}", reason=note)
+                return BackendChoice(
+                    rung.name, environment.device_name or "cuda", note, requested=rung.requested, engine=engine
+                )
             reasons.append(f"{rung.name}: {reason}")
         detail = "; ".join(reasons) or "no GPU backend registered"
         should_warn = True
@@ -869,7 +934,7 @@ def _fit_gpu(
     init_centroids: np.ndarray | None = None,
 ) -> FitResult:
     torch = importlib.import_module("torch")
-    e_means = gpu_engine()
+    e_means = gpu_engine(backend.engine)
     train_precision, warning = resolve_precision(backend, precision)
     if warning is not None:
         logger.warning("{warning}", warning=warning)
@@ -965,7 +1030,7 @@ def _fit_gpu(
             "recipe": recipe,
             "n_train": _n_train(n, k, max_points_per_centroid),
             "train_seconds": float(train_seconds),
-            "emeans_source": detect_emeans_source(),
+            "emeans_source": _engine_source(backend.engine),
             "faiss_version": str(faiss.__version__),
             "nepochs": _number(recipe.get("nepochs"), float, float(nepochs)),
             "batch_size": _number(recipe.get("batch_size"), int, None),
@@ -1029,10 +1094,10 @@ def cpu_assigner(centroids: np.ndarray, *, spherical: bool) -> Assigner:
 class _GpuAssigner:
     """FP32 assignment on the GPU; reduced precision is never used for cluster ids."""
 
-    def __init__(self, centroids: np.ndarray, *, spherical: bool, requested: str) -> None:
+    def __init__(self, centroids: np.ndarray, *, spherical: bool, requested: str, engine: str | None = None) -> None:
         faiss_import.check()
         self._torch = importlib.import_module("torch")
-        e_means = gpu_engine()
+        e_means = gpu_engine(engine)
         k, d = centroids.shape
         self._em = e_means.QuantizedEmeans(d, k, spherical=spherical, quantizer=None, assignment_backend=requested)
         self._em.centroids = self._torch.from_numpy(np.ascontiguousarray(centroids, dtype=np.float32)).to("cuda")
@@ -1060,4 +1125,4 @@ def assigner_for(backend: BackendChoice, centroids: np.ndarray, *, spherical: bo
     """
     if backend.requested is None:
         return cpu_assigner(centroids, spherical=spherical)
-    return _GpuAssigner(centroids, spherical=spherical, requested=backend.requested)
+    return _GpuAssigner(centroids, spherical=spherical, requested=backend.requested, engine=backend.engine)
