@@ -58,7 +58,28 @@ def _transfer_seconds(x: np.ndarray) -> float:
     return elapsed
 
 
-def _versions() -> dict[str, str | None]:
+def _emeans_source(method: str | None) -> str | None:
+    """
+    Return the e-means engine label of `method`, independent of the env the cell runs in.
+
+    CPU e-means always uses the stock faiss-cpu `NumpyEmeans`. GPU e-means uses `emeans_rocm` when it is installed,
+    else the stock engine. Lloyd baselines are not e-means and run no e-means engine, so they get `None`. Without a
+    method (the precision study, GPU only) the GPU label is returned.
+    """
+    from haystack_integrations.components.preprocessors.emeans._backend import (  # noqa: PLC0415
+        _cpu_source,
+        detect_emeans_source,
+    )
+
+    if method is None:
+        return detect_emeans_source()
+    spec = METHODS[method]
+    if spec.engine != "e-means":
+        return None
+    return _cpu_source() if spec.device == "cpu" else detect_emeans_source()
+
+
+def _versions(method: str | None = None) -> dict[str, str | None]:
     import faiss  # noqa: PLC0415
 
     try:
@@ -71,7 +92,6 @@ def _versions() -> dict[str, str | None]:
         package: str | None = importlib.metadata.version("emeans-haystack")
     except importlib.metadata.PackageNotFoundError:
         package = None
-    from haystack_integrations.components.preprocessors.emeans._backend import detect_emeans_source  # noqa: PLC0415
 
     return {
         "python": platform.python_version(),
@@ -79,7 +99,7 @@ def _versions() -> dict[str, str | None]:
         "faiss": str(faiss.__version__),
         "sklearn": sk,
         "emeans_haystack": package,
-        "emeans_source": detect_emeans_source(),
+        "emeans_source": _emeans_source(method),
     }
 
 
@@ -153,7 +173,7 @@ def main() -> int:
     path = scratch / f"{args.method}-{args.data}-n{args.n}-k{args.k}-s{args.seed}-p{passes_tag}.npy"
     np.save(path, result.centroids, allow_pickle=False)
 
-    versions = _versions()
+    versions = _versions(args.method)
     host = _host()
     if is_gpu:
         versions.update(_gpu_versions())

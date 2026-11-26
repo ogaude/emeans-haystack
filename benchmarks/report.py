@@ -272,10 +272,35 @@ def _header(records: list[dict[str, Any]], title: str, smoke: bool) -> list[str]
         ("HIP", versions.get("hip")),
         ("faiss", versions.get("faiss")),
         ("scikit-learn", versions.get("sklearn")),
-        ("e-means source", versions.get("emeans_source")),
     ]
     out += [f"- {name}: {value}" for name, value in fields if value is not None]
+    out += _engine_lines(ok)
     out.append("")
+    return out
+
+
+def _engine_lines(ok: list[dict[str, Any]]) -> list[str]:
+    """
+    List the e-means engine of every e-means method, from each record's own `versions.emeans_source`.
+
+    One results file is written by several envs, so one header label cannot name them all. Old records store a bare
+    `faiss-cpu`, new ones `faiss-cpu <version>` or `emeans-rocm <version>`; both are shown as stored. Lloyd
+    baselines run no e-means engine and are left out.
+    """
+    sources: dict[str, set[str]] = defaultdict(set)
+    for r in ok:
+        method = r.get("method")
+        if not method:
+            continue
+        engine = r.get("engine") or (METHODS[method].engine if method in METHODS else "")
+        if engine != "e-means":
+            continue
+        source = (r.get("versions") or {}).get("emeans_source")
+        sources[method].add(str(source) if source else "not recorded")
+    if not sources:
+        return []
+    out = ["- e-means engine per method:"]
+    out += [f"  - {method}: {', '.join(sorted(found))}" for method, found in sorted(sources.items())]
     return out
 
 

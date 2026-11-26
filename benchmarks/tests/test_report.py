@@ -220,3 +220,20 @@ def test_render_includes_spike_check_line() -> None:
 
 def test_protocol_states_cohere_normalisation() -> None:
     assert "normalises every row" in render([rec("emeans-cpu", 0, 1.0, 1.0)])
+
+
+def test_header_lists_engine_per_method() -> None:
+    records = [
+        # Old records store a bare label; new ones carry the version. Both render as stored.
+        rec("emeans-cpu", 0, 1.0, 1.0, versions={"faiss": "1", "emeans_source": "faiss-cpu"}),
+        rec("emeans-cpu", 1, 1.0, 1.0, versions={"faiss": "1", "emeans_source": "faiss-cpu 1.16.0"}),
+        rec("gpu-a", 0, 1.0, 1.0, versions={"faiss": "1", "emeans_source": "emeans-rocm 0.2.5"}),
+        # A Lloyd cell run in the fork env must not be reported as an e-means engine.
+        rec("faiss-lloyd", 0, 1.0, 1.0, versions={"faiss": "1", "emeans_source": "emeans-rocm 0.2.5"}),
+    ]
+    text = render(records)
+    assert "- e-means engine per method:" in text
+    assert "  - emeans-cpu: faiss-cpu, faiss-cpu 1.16.0" in text
+    assert "  - gpu-a: emeans-rocm 0.2.5" in text
+    assert "  - faiss-lloyd:" not in text
+    assert "- e-means source:" not in text

@@ -118,6 +118,23 @@ def test_versions_record_emeans_source() -> None:
         assert source.startswith("faiss-cpu ")
 
 
+def test_versions_record_engine_per_method() -> None:
+    from haystack_integrations.components.preprocessors.emeans._backend import (  # noqa: PLC0415
+        _cpu_source,
+        detect_emeans_source,
+    )
+
+    import worker  # noqa: PLC0415
+
+    # CPU e-means always runs the stock faiss-cpu engine, whatever env the cell runs in.
+    assert worker._versions("emeans-cpu")["emeans_source"] == _cpu_source()
+    # Lloyd baselines run no e-means engine.
+    assert worker._versions("faiss-lloyd")["emeans_source"] is None
+    assert worker._versions("sklearn-lloyd")["emeans_source"] is None
+    for method in GPU_METHODS:
+        assert worker._versions(method)["emeans_source"] == detect_emeans_source()
+
+
 @pytest.mark.gpu
 @requires_gpu
 def test_worker_gpu_fields(tmp_path: Path) -> None:
