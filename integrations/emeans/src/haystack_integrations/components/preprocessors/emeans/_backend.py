@@ -62,7 +62,13 @@ class BackendChoice:
 
 
 class GpuRung(Protocol):
-    """One GPU backend option that `select_backend` can consider."""
+    """
+    One GPU backend option that `select_backend` can consider.
+
+    A rung may also carry two optional attributes, read with `getattr`: `applies`, a callable taking the `EnvInfo`
+    that returns `False` to skip the rung silently, and `engine`, the GPU engine it runs on (`STOCK_ENGINE` or
+    `None` for the default).
+    """
 
     @property
     def name(self) -> str:
