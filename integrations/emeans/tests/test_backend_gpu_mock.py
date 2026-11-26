@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib
+import importlib.metadata
 import importlib.util
 import logging
 import sys
@@ -859,6 +860,8 @@ class FakeGpu:
         if emeans_rocm is not False:
             monkeypatch.setitem(sys.modules, "emeans_rocm", self.rocm)
             monkeypatch.setattr(_backend, "_dist_version", lambda _dist: emeans_rocm)  # type: ignore[arg-type,return-value]
+            # The fake module stands for the installed wheel's copy; provenance has its own tests.
+            monkeypatch.setattr(_backend, "_emeans_rocm_is_packaged", lambda: emeans_rocm is not None)
         else:
             monkeypatch.delitem(sys.modules, "emeans_rocm", raising=False)
             monkeypatch.setattr(importlib.util, "find_spec", _find_spec_without_emeans_rocm())
@@ -1082,7 +1085,11 @@ def test_nvidia_with_emeans_rocm_picks_nvidia_auto_rung() -> None:
 
 @pytest.mark.parametrize(
     ("installed", "expected"),
-    [("0.2.5", "emeans-rocm 0.2.5"), (None, "emeans-rocm"), (False, f"faiss-cpu {faiss.__version__}")],
+    [
+        ("0.2.5", "emeans-rocm 0.2.5"),
+        (None, "emeans-rocm (unversioned source checkout)"),
+        (False, f"faiss-cpu {faiss.__version__}"),
+    ],
 )
 def test_gpu_fit_reports_engine_label(
     monkeypatch: pytest.MonkeyPatch, installed: str | bool | None, expected: str
@@ -1202,3 +1209,88 @@ def test_missing_engine_attributes_do_not_discard_the_fit(monkeypatch: pytest.Mo
     assert info["alpha0"] is None
     assert info["n_splits"] is None
     assert info["recipe"] == {}
+
+
+# engine provenance: the label names the code that runs, not only the installed metadata (IN-02)
+
+
+class FakeDist:
+    """Stands in for the installed emeans-rocm distribution, rooted at `site`."""
+
+    def __init__(self, site: Path, files: list[str]) -> None:
+        self.site = site
+        self.files = [Path(f) for f in files]
+
+    def locate_file(self, entry: Path) -> Path:
+        return self.site / entry
+
+
+def _provenance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, module_at: str, dist: FakeDist | None, version: str | None
+) -> None:
+    """Make `emeans_rocm` resolve to `tmp_path/module_at/emeans_rocm/__init__.py`, next to the given distribution."""
+    origin = tmp_path / module_at / "emeans_rocm" / "__init__.py"
+    origin.parent.mkdir(parents=True, exist_ok=True)
+    origin.touch()
+    real_find_spec = importlib.util.find_spec
+
+    def find_spec(name: str, *args: Any) -> ModuleSpec | None:
+        if name == "emeans_rocm":
+            return ModuleSpec("emeans_rocm", None, origin=str(origin))
+        return real_find_spec(name, *args)
+
+    def distribution(name: str) -> FakeDist:
+        if dist is None or name != "emeans-rocm":
+            raise importlib.metadata.PackageNotFoundError(name)
+        return dist
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(importlib.metadata, "distribution", distribution)
+    monkeypatch.setattr(_backend, "_dist_version", lambda _dist: version)
+
+
+def test_installed_wheel_copy_is_labelled_with_its_version(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    dist = FakeDist(tmp_path / "site", ["emeans_rocm/__init__.py", "emeans_rocm/e_means.py"])
+    _provenance(monkeypatch, tmp_path, module_at="site", dist=dist, version="0.2.5")
+    assert _backend._emeans_rocm_is_packaged()
+    assert _backend.detect_emeans_source() == "emeans-rocm 0.2.5"
+
+
+def test_checkout_ahead_of_the_wheel_is_labelled_as_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    dist = FakeDist(tmp_path / "site", ["emeans_rocm/__init__.py"])
+    _provenance(monkeypatch, tmp_path, module_at="checkout", dist=dist, version="0.2.5")
+    assert not _backend._emeans_rocm_is_packaged()
+    label = _backend.detect_emeans_source()
+    assert label == "emeans-rocm 0.2.5 (source checkout)"
+    assert str(tmp_path) not in label
+
+
+def test_editable_install_without_module_files_is_labelled_as_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dist = FakeDist(tmp_path / "site", ["emeans_rocm-0.2.5.dist-info/METADATA", "_emeans_rocm.pth"])
+    _provenance(monkeypatch, tmp_path, module_at="checkout", dist=dist, version="0.2.5")
+    assert _backend.detect_emeans_source() == "emeans-rocm 0.2.5 (source checkout)"
+
+
+def test_checkout_without_any_distribution_is_unversioned(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _provenance(monkeypatch, tmp_path, module_at="checkout", dist=None, version=None)
+    assert not _backend._emeans_rocm_is_packaged()
+    assert _backend.detect_emeans_source() == "emeans-rocm (unversioned source checkout)"
+
+
+def test_checkout_is_not_range_checked_against_the_wheel_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The installed metadata does not describe a checkout that runs instead, so its version is not range checked.
+    dist = FakeDist(tmp_path / "site", ["emeans_rocm/__init__.py"])
+    _provenance(monkeypatch, tmp_path, module_at="checkout", dist=dist, version="0.3.0")
+    assert _backend.emeans_rocm_unsupported_reason() is None
+    assert _backend.detect_emeans_source() == "emeans-rocm 0.3.0 (source checkout)"
+
+
+def test_wheel_copy_outside_the_range_is_still_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    dist = FakeDist(tmp_path / "site", ["emeans_rocm/__init__.py"])
+    _provenance(monkeypatch, tmp_path, module_at="site", dist=dist, version="0.3.0")
+    assert _backend.emeans_rocm_unsupported_reason() is not None
+    assert _backend.detect_emeans_source() == f"faiss-cpu {faiss.__version__}"

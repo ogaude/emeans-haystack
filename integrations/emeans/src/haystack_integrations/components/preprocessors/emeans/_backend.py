@@ -14,6 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
@@ -106,13 +107,13 @@ def emeans_rocm_unsupported_reason() -> str | None:
     """
     Return why the installed `emeans_rocm` is not used, or `None` when it is usable or not installed.
 
-    A package without distribution metadata (for example a source checkout on the path) cannot be checked and is
-    used as is.
+    A module that is not the installed distribution's copy (for example a source checkout on the path, with or
+    without a wheel installed) has no checkable version and is used as is.
     """
     if not emeans_rocm_importable():
         return None
     version = _dist_version("emeans-rocm")
-    if version is None:
+    if version is None or not _emeans_rocm_is_packaged():
         return None
     try:
         supported = SpecifierSet(_EMEANS_ROCM_SUPPORTED).contains(Version(version), prereleases=True)
@@ -164,11 +165,44 @@ def _cpu_source() -> str:
     return f"faiss-cpu {faiss.__version__}"
 
 
+def _emeans_rocm_is_packaged() -> bool:
+    """
+    Return whether the `emeans_rocm` module found on the path is the copy installed by the `emeans-rocm` distribution.
+
+    `sys.path` (the working directory, `PYTHONPATH`) can put a source checkout ahead of the installed wheel, and an
+    editable install runs its checkout; then the distribution's version does not describe the code that runs.
+    """
+    try:
+        spec = importlib.util.find_spec("emeans_rocm")
+        dist = importlib.metadata.distribution("emeans-rocm")
+    except (ImportError, ValueError, importlib.metadata.PackageNotFoundError):
+        return False
+    origin = spec.origin if spec is not None else None
+    if not origin:
+        return False
+    try:
+        module_file = Path(origin).resolve()
+        return any(Path(str(dist.locate_file(entry))).resolve() == module_file for entry in dist.files or ())
+    except (OSError, ValueError):
+        return False
+
+
 def detect_emeans_source() -> str:
-    """Return the GPU engine label: `"emeans-rocm <version>"` when it is the GPU engine, else the faiss-cpu label."""
+    """
+    Return the GPU engine label: `"emeans-rocm <version>"` when it is the GPU engine, else the faiss-cpu label.
+
+    When the imported `emeans_rocm` is not the installed distribution's copy, the label says so instead of
+    claiming the installed version: `"emeans-rocm <version> (source checkout)"` when a distribution is installed
+    but a checkout runs, `"emeans-rocm (unversioned source checkout)"` when none is installed. Paths are never
+    included.
+    """
     if emeans_rocm_enabled():
         version = _dist_version("emeans-rocm")
-        return f"emeans-rocm {version}" if version else "emeans-rocm"
+        if version is None:
+            return "emeans-rocm (unversioned source checkout)"
+        if not _emeans_rocm_is_packaged():
+            return f"emeans-rocm {version} (source checkout)"
+        return f"emeans-rocm {version}"
     return _cpu_source()
 
 

@@ -153,6 +153,7 @@ def test_emeans_rocm_importable_find_spec_errors(monkeypatch: pytest.MonkeyPatch
 def test_emeans_source_names_package_and_version(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_find_spec(monkeypatch, emeans_rocm=ModuleSpec("emeans_rocm", None))
     monkeypatch.setattr(_backend, "_dist_version", lambda _dist: "0.2.5")
+    monkeypatch.setattr(_backend, "_emeans_rocm_is_packaged", lambda: True)  # the installed wheel's copy
     assert detect_emeans_source() == "emeans-rocm 0.2.5"
     assert detect_environment().emeans_rocm is True
 
@@ -160,7 +161,7 @@ def test_emeans_source_names_package_and_version(monkeypatch: pytest.MonkeyPatch
 def test_emeans_source_without_distribution_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_find_spec(monkeypatch, emeans_rocm=ModuleSpec("emeans_rocm", None))
     monkeypatch.setattr(_backend, "_dist_version", lambda _dist: None)
-    assert detect_emeans_source() == "emeans-rocm"
+    assert detect_emeans_source() == "emeans-rocm (unversioned source checkout)"
 
 
 def test_emeans_source_falls_back_to_faiss_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
