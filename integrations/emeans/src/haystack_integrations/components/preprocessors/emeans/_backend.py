@@ -103,6 +103,7 @@ def emeans_rocm_importable() -> bool:
 # release outside this range is not used: the stock faiss engine runs instead and a warning names the version.
 _EMEANS_ROCM_SUPPORTED = ">=0.2.5,<0.3"
 _UNSUPPORTED_WARNED: set[str] = set()  # reasons already logged in this process
+_NATIVE_NOTES_WARNED: set[str] = set()  # "Triton rung failed, using native FP32" notes already logged
 
 
 def emeans_rocm_unsupported_reason() -> str | None:
@@ -347,6 +348,7 @@ def clear_probe_cache() -> None:
     with _PROBE_LOCK:
         _PROBE_CACHE.clear()
         _UNSUPPORTED_WARNED.clear()
+        _NATIVE_NOTES_WARNED.clear()
 
 
 def _applies_always(_env: EnvInfo) -> bool:
@@ -396,6 +398,7 @@ def _stock_probe(rung_name: str, requested: str, precision: str) -> ProbeResult:
 
 
 STOCK_RUNG = "native-stock"
+ROCM_TRITON_RUNG = "rocm-triton"
 
 
 def default_rungs(probe_fn: ProbeFn | None = None) -> tuple[GpuRung, ...]:
@@ -411,7 +414,7 @@ def default_rungs(probe_fn: ProbeFn | None = None) -> tuple[GpuRung, ...]:
     fn = probe_fn if probe_fn is not None else probe
     stock_fn = probe_fn if probe_fn is not None else _stock_probe
     return (
-        _Attempt("rocm-triton", "auto", _needs_emeans_rocm, fn),
+        _Attempt(ROCM_TRITON_RUNG, "auto", _needs_emeans_rocm, fn),
         _Attempt("nvidia-auto", "auto", _needs_nvidia, fn),
         _Attempt("nvidia-triton", "triton", _needs_nvidia, fn),
         _Attempt("native", "native", _always, fn),
@@ -601,7 +604,9 @@ def select_backend(
 
     When emeans-rocm is the GPU engine and every one of its rungs fails, the stock `faiss.contrib.e_means` native
     rung is tried on the GPU before the CPU (both for `"auto"` and `"cuda"`); the choice then carries
-    `engine=STOCK_ENGINE` and a `fallback_reason` naming the failed rungs, and a warning is logged.
+    `engine=STOCK_ENGINE` and a `fallback_reason` naming the failed rungs, and a warning is logged. On ROCm with
+    emeans-rocm enabled, a `native` choice made because the `rocm-triton` probe failed carries that probe failure
+    in `fallback_reason`, and a warning naming it is logged once per process.
 
     :param device: `"cpu"`, `"cuda"` or `"auto"`.
     :param n: Number of embeddings.
@@ -633,6 +638,7 @@ def select_backend(
     else:
         rungs = gpu_rungs if gpu_rungs is not None else default_rungs()
         reasons: list[str] = []
+        failed: dict[str, str] = {}  # rung name -> why it was not usable
         oom_rungs: list[str] = []
         for rung in rungs:
             applies = getattr(rung, "applies", None)
@@ -659,10 +665,19 @@ def select_backend(
                     )
                     if warn:
                         logger.warning("{reason}", reason=note)
+                elif _triton_rejected_for_native(environment, rung.requested, failed):
+                    note = (
+                        f"emeans-rocm is installed but its Triton rung failed the GPU probe "
+                        f"({failed[ROCM_TRITON_RUNG]}); using native FP32 ({rung.name})"
+                    )
+                    if warn and note not in _NATIVE_NOTES_WARNED:
+                        _NATIVE_NOTES_WARNED.add(note)
+                        logger.warning("{reason}", reason=note)
                 return BackendChoice(
                     rung.name, environment.device_name or "cuda", note, requested=rung.requested, engine=engine
                 )
             reasons.append(f"{rung.name}: {reason}")
+            failed[rung.name] = reason
         detail = "; ".join(reasons) or "no GPU backend registered"
         should_warn = True
     if device == "cuda":
@@ -672,6 +687,12 @@ def select_backend(
     if should_warn and warn:
         logger.warning("{reason}", reason=fallback_reason)
     return BackendChoice("cpu", "cpu", fallback_reason)
+
+
+def _triton_rejected_for_native(env: EnvInfo, requested: str, failed: Mapping[str, str]) -> bool:
+    """Return whether a `native` choice on ROCm is only made because emeans-rocm's Triton rung failed its probe."""
+    # With is_rocm and emeans_rocm the rocm-triton gate passes, so a recorded failure is a probe failure.
+    return requested == "native" and env.is_rocm and env.emeans_rocm and ROCM_TRITON_RUNG in failed
 
 
 _EMEANS_ROCM_HINT = "(pip install emeans-rocm for Triton kernels and BF16/FP16 on RX 9000 GPUs)"

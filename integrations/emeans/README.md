@@ -34,11 +34,13 @@ RX 9000 (gfx120x) GPUs, run `pip install emeans-rocm` after installing ROCm PyTo
 [emeans-rocm](https://pypi.org/project/emeans-rocm/) (import name `emeans_rocm`, source at
 https://github.com/ogaude/e-means-rocm) is the author's package of Meta's e-means code under its MIT license. When it
 is installed, the GPU backends use it on every GPU, AMD and NVIDIA. Its NVIDIA path has not been re-run on hardware,
-so NVIDIA users who want the verified path leave it uninstalled. If emeans-rocm is installed but every one of its GPU
-backends fails the start-up probe on your GPU, the stock faiss-cpu e-means engine is tried on the GPU in native FP32
-before falling back to the CPU; a warning and `stats["fallback_reason"]` name the backends that failed. CPU fits
-always use the faiss-cpu e-means. The fitter's `stats["emeans_source"]` names the package and version that ran, for
-example `"emeans-rocm 0.2.5"` or `"faiss-cpu 1.16.0"`, and `stats["backend"]` which backend ran.
+so NVIDIA users who want the verified path leave it uninstalled. On AMD, if its Triton backend fails the start-up
+probe (for example, no Triton in your ROCm PyTorch), fits run in native FP32, and a warning (once per process) and
+`stats["fallback_reason"]` give the probe error. If every one of its GPU backends fails the probe on your GPU, the
+stock faiss-cpu e-means engine is tried on the GPU in native FP32 before falling back to the CPU; a warning and
+`stats["fallback_reason"]` name the backends that failed. CPU fits always use the faiss-cpu e-means. The fitter's
+`stats["emeans_source"]` names the package and version that ran, for example `"emeans-rocm 0.2.5"` or
+`"faiss-cpu 1.16.0"`, and `stats["backend"]` which backend ran.
 
 Importing the package never imports PyTorch. PyTorch is loaded only when a GPU backend is considered.
 

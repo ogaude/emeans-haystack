@@ -1393,3 +1393,63 @@ def test_wheel_copy_outside_the_range_is_still_rejected(monkeypatch: pytest.Monk
     _provenance(monkeypatch, tmp_path, module_at="site", dist=dist, version="0.3.0")
     assert _backend.emeans_rocm_unsupported_reason() is not None
     assert _backend.detect_emeans_source() == f"faiss-cpu {faiss.__version__}"
+
+
+# emeans-rocm's Triton rung rejected on AMD: the native FP32 choice says why, warning once per process (IN-03)
+
+TRITON_NOTE = (
+    "emeans-rocm is installed but its Triton rung failed the GPU probe (CompilationError: boom); "
+    "using native FP32 (native)"
+)
+
+
+def test_rejected_triton_rung_is_reported_once(caplog: pytest.LogCaptureFixture) -> None:
+    probe = FakeProbe({"rocm-triton": fail("CompilationError: boom")})
+    env = gpu_env(**AMD_EMEANS_ROCM)
+    with caplog.at_level(logging.DEBUG):
+        first = choose(env, probe)
+        second = choose(env, probe)
+    assert (first.name, first.requested, first.engine) == ("native", "native", None)
+    assert first.fallback_reason == second.fallback_reason == TRITON_NOTE
+    assert [w.getMessage() for w in warnings_in(caplog)] == [TRITON_NOTE]  # once per process
+
+
+def test_rejected_triton_rung_is_silent_with_warn_false(caplog: pytest.LogCaptureFixture) -> None:
+    probe = FakeProbe({"rocm-triton": fail("CompilationError: boom")})
+    with caplog.at_level(logging.DEBUG):
+        choice = select_backend(
+            device="auto", n=100, k=10, gpu_threshold=1, env=gpu_env(**AMD_EMEANS_ROCM),
+            gpu_rungs=default_rungs(probe_fn=probe), warn=False,
+        )  # fmt: skip
+    assert choice.fallback_reason == TRITON_NOTE
+    assert warnings_in(caplog) == []
+
+
+@pytest.mark.parametrize(
+    "env",
+    [gpu_env(is_rocm=True, hip_version="7.16"), gpu_env(emeans_rocm=True)],
+    ids=["amd-without-emeans-rocm", "nvidia-with-emeans-rocm"],
+)
+def test_native_choice_without_a_triton_rejection_has_no_note(env: EnvInfo, caplog: pytest.LogCaptureFixture) -> None:
+    probe = FakeProbe({"nvidia-auto": fail("a"), "nvidia-triton": fail("b")})
+    with caplog.at_level(logging.DEBUG):
+        choice = choose(env, probe)
+    assert choice.name == "native"
+    assert choice.fallback_reason is None
+    assert warnings_in(caplog) == []
+
+
+def test_rejected_triton_rung_reason_reaches_the_fit_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    gpu = FakeGpu(monkeypatch)
+    gpu.torch.version = types.SimpleNamespace(hip="7.16", cuda=None)
+    monkeypatch.setattr(FakeEngine, "assignment_backend", "native")
+    choice = choose(gpu_env(**AMD_EMEANS_ROCM), FakeProbe({"rocm-triton": fail("CompilationError: boom")}))
+    x = np.random.default_rng(0).normal(size=(40, 8)).astype(np.float32)
+    x /= np.linalg.norm(x, axis=1, keepdims=True)
+    info = _backend.fit_model(
+        x, k=3, spherical=True, nepochs=1.0, seed=0, max_points_per_centroid=None, backend=choice, precision="auto",
+    ).info  # fmt: skip
+    assert info["backend"] == "gpu-pytorch"
+    assert info["precision_used"] == "fp32"
+    assert info["fallback_reason"] == TRITON_NOTE
+    assert info["emeans_source"] == "emeans-rocm 0.2.5"
