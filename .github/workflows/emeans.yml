@@ -79,3 +79,52 @@ jobs:
 
       - name: Run unit tests
         run: hatch run test:unit-cov-retry
+
+      - name: Run unit tests with lowest direct dependencies
+        if: matrix.python-version == '3.11' && runner.os == 'Linux'
+        run: |
+          hatch env prune
+          hatch run uv pip compile pyproject.toml --resolution lowest-direct --output-file requirements_lowest_direct.txt
+          hatch -e test env run -- uv pip install -r requirements_lowest_direct.txt
+          hatch run test:unit
+
+      - name: Nightly - run unit tests with Haystack main branch
+        if: github.event_name == 'schedule'
+        run: |
+          hatch env prune
+          hatch -e test env run -- uv pip install git+https://github.com/deepset-ai/haystack.git@main
+          hatch run test:unit
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Install Hatch
+        run: |
+          python -m pip install --upgrade pip
+          pip install hatch --uploaded-prior-to=P1D
+
+      - name: Build
+        run: hatch build
+
+      - name: Check distributions
+        run: |
+          test "$(ls dist/emeans_haystack-*.whl | wc -l)" = 1
+          test "$(ls dist/emeans_haystack-*.tar.gz | wc -l)" = 1
+          unzip -p dist/*.whl '*.dist-info/METADATA' > "$RUNNER_TEMP/METADATA"
+          grep -E '^Name: emeans-haystack$' "$RUNNER_TEMP/METADATA"
+          grep -Fx "Version: $(hatch version)" "$RUNNER_TEMP/METADATA"
+          grep -E '^License-Expression: Apache-2.0$' "$RUNNER_TEMP/METADATA"
+          grep -E '^Requires-Dist: numpy>=2.0' "$RUNNER_TEMP/METADATA"
+          grep -E '^Requires-Dist: faiss-cpu>=1.16.0' "$RUNNER_TEMP/METADATA"
+          grep -E '^Requires-Dist: haystack-ai>=3.5' "$RUNNER_TEMP/METADATA"
