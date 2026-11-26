@@ -1119,3 +1119,86 @@ def test_native_rung_hint_depends_on_emeans_rocm(
         allow_cpu_fallback=False,
     ).info  # fmt: skip
     assert info["backend_hint"] == hint
+
+
+# supported emeans-rocm range: outside it the stock engine runs and a warning names the version
+
+
+@pytest.mark.parametrize("version", ["0.2.5", "0.2.9", "0.2.6.dev1"])
+def test_emeans_rocm_inside_supported_range_is_used(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, version: str
+) -> None:
+    FakeGpu(monkeypatch, emeans_rocm=version)
+    with caplog.at_level(logging.DEBUG):
+        assert _backend.emeans_rocm_unsupported_reason() is None
+        assert _backend.emeans_rocm_enabled()
+        info = run_fit(allow_cpu_fallback=False).info
+    assert engines_built() == {RocmEngine}
+    assert info["emeans_source"] == f"emeans-rocm {version}"
+    assert warnings_in(caplog) == []
+
+
+@pytest.mark.parametrize("version", ["0.2.4", "0.3.0", "0.3.0rc1", "1.0", "not-a-version"])
+def test_emeans_rocm_outside_supported_range_uses_stock_engine(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, version: str
+) -> None:
+    FakeGpu(monkeypatch, emeans_rocm=version)
+    with caplog.at_level(logging.DEBUG):
+        reason = _backend.emeans_rocm_unsupported_reason()
+        assert reason is not None
+        assert f"emeans-rocm {version}" in reason
+        assert ">=0.2.5,<0.3" in reason
+        assert not _backend.emeans_rocm_enabled()
+        info = run_fit(allow_cpu_fallback=False).info
+        assert _backend._run_probe("auto", "fp32").ok
+    assert engines_built() == {StockEngine}
+    assert info["emeans_source"] == f"faiss-cpu {faiss.__version__}"
+    warnings = warnings_in(caplog)
+    assert [w.getMessage() for w in warnings] == [reason]  # warned once per process, not on every engine lookup
+
+
+def test_rocm_triton_rung_names_the_unsupported_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeGpu(monkeypatch, emeans_rocm="0.3.0")
+    env = gpu_env(is_rocm=True, emeans_rocm=_backend.emeans_rocm_enabled(), hip_version="7.16")
+    choice = select_backend(device="auto", n=100, k=10, gpu_threshold=1, env=env, gpu_rungs=default_rungs(FakeProbe()))
+    assert choice.name == "native"
+    reason = _backend._needs_emeans_rocm(env)
+    assert reason is not None
+    assert "emeans-rocm 0.3.0 is outside the supported range" in reason
+
+
+@pytest.mark.parametrize("missing", ["assignment_backend", "representation", "nepochs", "batch_size", "alpha0"])
+def test_missing_recipe_key_does_not_discard_the_fit(monkeypatch: pytest.MonkeyPatch, missing: str) -> None:
+    FakeGpu(monkeypatch)
+    real_train = FakeEngine.train
+
+    def train(self: FakeEngine, x: FakeTensor, init_centroids: object = None) -> tuple[FakeTensor, None]:
+        del self.recipe[missing]
+        return real_train(self, x, init_centroids)
+
+    monkeypatch.setattr(FakeEngine, "train", train)
+    result = run_fit(allow_cpu_fallback=False)
+    assert result.centroids.shape == (3, 8)
+    info = result.info
+    assert info["emeans_source"] == "emeans-rocm 0.2.5"
+    assert info["precision_used"] == "fp32"
+    assert info["nepochs"] == 1.0
+    assert missing not in info["recipe"]
+
+
+def test_missing_engine_attributes_do_not_discard_the_fit(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeGpu(monkeypatch)
+    real_train = FakeEngine.train
+
+    def train(self: FakeEngine, x: FakeTensor, init_centroids: object = None) -> tuple[FakeTensor, None]:
+        out = real_train(self, x, init_centroids)
+        del self.recipe, self.n_splits, self.iteration_stats
+        return out
+
+    monkeypatch.setattr(FakeEngine, "train", train)
+    info = run_fit(allow_cpu_fallback=False).info
+    assert info["assignment_backend"] == GPU_CHOICE.requested  # the requested backend when unreported
+    assert info["batch_size"] is None
+    assert info["alpha0"] is None
+    assert info["n_splits"] is None
+    assert info["recipe"] == {}

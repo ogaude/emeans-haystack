@@ -19,6 +19,8 @@ from typing import Any, Protocol
 import numpy as np
 from haystack import logging
 from haystack.lazy_imports import LazyImport
+from packaging.specifiers import SpecifierSet
+from packaging.version import InvalidVersion, Version
 
 with LazyImport("Run 'pip install \"faiss-cpu>=1.16.0\"'") as faiss_import:
     import faiss
@@ -37,7 +39,7 @@ class EnvInfo:
     torch_importable: bool
     gpu_available: bool
     is_rocm: bool
-    emeans_rocm: bool
+    emeans_rocm: bool  # installed and inside the supported version range, so used as the GPU engine
     device_name: str | None
     torch_version: str | None
     hip_version: str | None
@@ -94,14 +96,57 @@ def emeans_rocm_importable() -> bool:
         return False
 
 
+# The emeans-rocm releases this integration is tested against. The README install line stays unpinned (D-03); a
+# release outside this range is not used: the stock faiss engine runs instead and a warning names the version.
+_EMEANS_ROCM_SUPPORTED = ">=0.2.5,<0.3"
+_UNSUPPORTED_WARNED: set[str] = set()  # reasons already logged in this process
+
+
+def emeans_rocm_unsupported_reason() -> str | None:
+    """
+    Return why the installed `emeans_rocm` is not used, or `None` when it is usable or not installed.
+
+    A package without distribution metadata (for example a source checkout on the path) cannot be checked and is
+    used as is.
+    """
+    if not emeans_rocm_importable():
+        return None
+    version = _dist_version("emeans-rocm")
+    if version is None:
+        return None
+    try:
+        supported = SpecifierSet(_EMEANS_ROCM_SUPPORTED).contains(Version(version), prereleases=True)
+    except InvalidVersion:
+        supported = False
+    if supported:
+        return None
+    return (
+        f"emeans-rocm {version} is outside the supported range {_EMEANS_ROCM_SUPPORTED}; "
+        "using the stock faiss e-means engine"
+    )
+
+
+def emeans_rocm_enabled() -> bool:
+    """Return whether `emeans_rocm` is the GPU engine: installed and in the supported range. Warns once if not."""
+    if not emeans_rocm_importable():
+        return False
+    reason = emeans_rocm_unsupported_reason()
+    if reason is None:
+        return True
+    if reason not in _UNSUPPORTED_WARNED:
+        _UNSUPPORTED_WARNED.add(reason)
+        logger.warning("{reason}", reason=reason)
+    return False
+
+
 def gpu_engine() -> Any:
     """
     Return the module that provides the GPU `Emeans` and `QuantizedEmeans` classes.
 
-    `emeans_rocm` is used on any GPU when it is importable, otherwise `faiss.contrib.e_means`. CPU paths must not
-    call this: they use the stock `NumpyEmeans`.
+    `emeans_rocm` is used on any GPU when it is importable and inside `_EMEANS_ROCM_SUPPORTED`, otherwise
+    `faiss.contrib.e_means`. CPU paths must not call this: they use the stock `NumpyEmeans`.
     """
-    if emeans_rocm_importable():
+    if emeans_rocm_enabled():
         return importlib.import_module("emeans_rocm")
     return importlib.import_module("faiss.contrib.e_means")
 
@@ -120,8 +165,8 @@ def _cpu_source() -> str:
 
 
 def detect_emeans_source() -> str:
-    """Return the GPU engine label: `"emeans-rocm <version>"` when it is installed, else the faiss-cpu label."""
-    if emeans_rocm_importable():
+    """Return the GPU engine label: `"emeans-rocm <version>"` when it is the GPU engine, else the faiss-cpu label."""
+    if emeans_rocm_enabled():
         version = _dist_version("emeans-rocm")
         return f"emeans-rocm {version}" if version else "emeans-rocm"
     return _cpu_source()
@@ -243,6 +288,7 @@ def clear_probe_cache() -> None:
     """Forget every remembered probe outcome."""
     with _PROBE_LOCK:
         _PROBE_CACHE.clear()
+        _UNSUPPORTED_WARNED.clear()
 
 
 @dataclass(frozen=True)
@@ -263,6 +309,9 @@ class _Attempt:
 def _needs_emeans_rocm(env: EnvInfo) -> str | None:
     if env.is_rocm and env.emeans_rocm:
         return None
+    unsupported = emeans_rocm_unsupported_reason()
+    if unsupported is not None:
+        return unsupported
     return "needs the emeans-rocm package (pip install emeans-rocm) on a ROCm build of PyTorch"
 
 
@@ -388,7 +437,7 @@ def hidden_gpu_reason(
 
 def detect_environment() -> EnvInfo:
     """Inspect the environment; PyTorch is imported only when it is installed."""
-    emeans_rocm = emeans_rocm_importable()
+    emeans_rocm = emeans_rocm_enabled()
     try:
         torch_findable = importlib.util.find_spec("torch") is not None
     except (ImportError, ValueError):
@@ -761,6 +810,16 @@ def _memory_preflight(
     return estimate, free
 
 
+def _number(value: Any, cast: Callable[[Any], Any], default: Any) -> Any:
+    """Return `cast(value)`, or `default` when the value is missing or cannot be converted."""
+    if value is None:
+        return default
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _fit_gpu(
     x: np.ndarray,
     *,
@@ -846,27 +905,38 @@ def _fit_gpu(
             torch.cuda.synchronize()
             train_seconds = time.perf_counter() - start
         result = np.ascontiguousarray(centroids.detach().float().cpu().numpy(), dtype=np.float32)
-        recipe = em.recipe
-        label = str(recipe["assignment_backend"])  # read after training: e-means resolves "auto" itself
-        precision_label = str(recipe["representation"]).removeprefix("torch.")
-        iteration_stats = em.iteration_stats
-        imbalance = (
-            float(iteration_stats[-1].get("imbalance_factor", float("nan"))) if iteration_stats else float("nan")
-        )
+        # Reporting fields are read with defaults: a renamed field in a newer engine must never discard a finished
+        # training run.
+        raw_recipe = getattr(em, "recipe", None)
+        recipe: dict[str, Any] = dict(raw_recipe) if isinstance(raw_recipe, Mapping) else {}
+        # read after training: e-means resolves "auto" itself
+        label = str(recipe.get("assignment_backend", backend.requested or "unknown"))
+        representation = recipe.get("representation")
+        precision_used = train_precision
+        if representation is not None:
+            precision_label = str(representation).removeprefix("torch.")
+            precision_used = _PRECISION_NAMES.get(precision_label, precision_label)
+        iteration_stats = getattr(em, "iteration_stats", None)
+        imbalance = float("nan")
+        if iteration_stats:
+            last = iteration_stats[-1]
+            imbalance = _number(
+                last.get("imbalance_factor") if isinstance(last, Mapping) else None, float, float("nan")
+            )
         info: dict[str, Any] = {
             "backend": _BACKEND_NAMES.get(label, f"gpu-{label}"),
             "device_name": backend.device_name,
-            "precision_used": _PRECISION_NAMES.get(precision_label, precision_label),
+            "precision_used": precision_used,
             "assignment_backend": label,
             "recipe": recipe,
             "n_train": _n_train(n, k, max_points_per_centroid),
             "train_seconds": float(train_seconds),
             "emeans_source": detect_emeans_source(),
             "faiss_version": str(faiss.__version__),
-            "nepochs": float(recipe["nepochs"]),
-            "batch_size": int(recipe["batch_size"]),
-            "alpha0": float(recipe["alpha0"]),
-            "n_splits": int(em.n_splits),
+            "nepochs": _number(recipe.get("nepochs"), float, float(nepochs)),
+            "batch_size": _number(recipe.get("batch_size"), int, None),
+            "alpha0": _number(recipe.get("alpha0"), float, None),
+            "n_splits": _number(getattr(em, "n_splits", None), int, None),
             "imbalance": imbalance,
             "backend_hint": _backend_hint(
                 is_rocm=torch.version.hip is not None,
