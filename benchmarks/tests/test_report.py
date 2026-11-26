@@ -237,3 +237,130 @@ def test_header_lists_engine_per_method() -> None:
     assert "  - gpu-a: emeans-rocm 0.2.5" in text
     assert "  - faiss-lloyd:" not in text
     assert "- e-means source:" not in text
+
+
+def _sweep(method: str, objectives: dict[float, float], *, data: str = "cohere", n: int = 100_000) -> list:
+    mode = "spherical" if data == "cohere" else "euclidean"
+    return [
+        rec(method, 0, 2.0 * p, obj, timing="cold", kind="sweep", passes_requested=p, passes_used=p, data=data,
+            mode=mode, n=n, k=4096, key=f"{method}|{data}|{n}|4096|{mode}|0|sweep|{p:g}|cold")
+        for p, obj in objectives.items()
+    ]  # fmt: skip
+
+
+EMEANS_SWEEP = {1.0: 110.0, 2.0: 100.0, 5.0: 90.0, 10.0: 89.0, 25.0: 88.0}
+LLOYD_SWEEP = {1.0: 120.0, 2.0: 110.0, 5.0: 100.0, 10.0: 95.0, 25.0: 93.0}
+
+
+def test_passes_to_objective() -> None:
+    rows = aggregate(_sweep("emeans-cpu", EMEANS_SWEEP) + _sweep("faiss-lloyd", LLOYD_SWEEP))
+    (reach,) = report.passes_to_objective(rows)
+    assert reach.lloyd.objective == 93.0
+    assert reach.emeans is not None and reach.emeans.passes_used == 5.0
+    assert reach.earlier is not None and reach.earlier.passes_used == 2.0
+    assert reach.pass_ratio == "5.0-12.5x"
+    assert reach.lloyd_to_default is None  # Lloyd never reaches e-means' 5-pass objective within 25 passes
+    first = report.passes_to_objective(
+        aggregate(_sweep("emeans-cpu", {1.0: 90.0}) + _sweep("faiss-lloyd", LLOYD_SWEEP))
+    )
+    assert first[0].pass_ratio == ">= 25.0x"
+    never = report.passes_to_objective(
+        aggregate(_sweep("emeans-cpu", {5.0: 99.0}) + _sweep("faiss-lloyd", LLOYD_SWEEP))
+    )
+    assert never[0].emeans is None
+    assert never[0].pass_ratio == "-"
+
+
+def _main(method: str, seconds: float, objective: float, **kw: Any) -> dict[str, Any]:
+    return rec(method, 0, seconds, objective, timing="cold", passes_used=kw.pop("passes_used", 5.0), **kw)
+
+
+def test_main_comparison_cpu_only_mark() -> None:
+    rows = aggregate([_main("emeans-cpu", 10.0, 99.0), _main("faiss-lloyd", 30.0, 100.0, passes_used=25.0)])
+    (compare,) = report.main_comparison(rows)
+    assert compare.cpu_only_win
+    assert compare.gap is not None and round(compare.gap, 4) == -0.01
+    worse = report.main_comparison(aggregate([_main("emeans-cpu", 10.0, 110.0), _main("faiss-lloyd", 30.0, 100.0)]))
+    assert not worse[0].cpu_only_win
+    slower = report.main_comparison(aggregate([_main("emeans-cpu", 40.0, 99.0), _main("faiss-lloyd", 30.0, 100.0)]))
+    assert not slower[0].cpu_only_win
+    alone = report.main_comparison(aggregate([_main("emeans-cpu", 40.0, 99.0)]))
+    assert alone[0].lloyd is None and not alone[0].cpu_only_win
+
+
+def test_lloyd_stop_labels() -> None:
+    rows = aggregate(
+        [_main("sklearn-lloyd", 1.0, 1.0, passes_used=35.0), _main("faiss-lloyd", 1.0, 1.0, passes_used=20.0)]
+    )
+    labels = {r.method: report._stop(r) for r in rows}
+    assert labels["sklearn-lloyd"] == "converged (tol 1e-4) after 35"
+    assert labels["faiss-lloyd"] == "stopped after 20 of 25"
+
+
+def _full() -> list[dict[str, Any]]:
+    records = _sweep("emeans-cpu", EMEANS_SWEEP) + _sweep("faiss-lloyd", LLOYD_SWEEP)
+    records += [
+        _main("emeans-cpu", 10.0, 99.0),
+        _main("faiss-lloyd", 30.0, 100.0, passes_used=25.0),
+        _main("gpu-a", 1.0, 99.0, transfer_s=0.5, host={"label": "t", "gpu": "Test GPU"}),
+        rec("faiss-lloyd", 0, None, None, timing="cold", status="skipped", skipped_reason="not run: est. 3.1 h",
+            n=1_000_000, k=65536, key="capped|cold"),
+    ]  # fmt: skip
+    return records
+
+
+def test_render_new_sections() -> None:
+    text = render(_full(), precision_records=[prec(s) for s in range(3)])
+    order = [
+        "## Headline", "## Protocol", "## Passes to the same objective", "## e-means at 5 passes vs Lloyd's k-means",
+        "## Upstream claims, checked", "## Main results", "## Where the GPU does not help", "## GPU engines",
+        "## Pass sweep", "## Cuts and choices", "## Not run", "## Precision",
+    ]  # fmt: skip
+    positions = [text.index(title) for title in order]
+    assert positions == sorted(positions)
+    headline = text.split("## Headline")[1].split("## Protocol")[0]
+    assert "e-means needs fewer passes (epochs) than Lloyd's k-means" in headline
+    assert "within 5 passes (90)" in headline
+    assert "Test GPU" in headline
+    assert "0.2.6" in text.split("## GPU engines")[1]
+    for line in text.splitlines():
+        if "k-means" in line:
+            assert "Lloyd" in line or "not k-means" in line, line
+
+
+def test_where_section_explains_missing_marks() -> None:
+    where = render(_full()).split("## Where the GPU does not help")[1].split("## GPU engines")[0]
+    assert "No cell carries `GPU does not help` or `CPU e-means wins`." in where
+    assert "The GPU helps in every main cell measured" in where
+    assert "`CPU e-means wins (CPU only)` in 1 of 1 main cells" in where
+
+
+def test_cuts_table_names_constants_and_capped_cells() -> None:
+    cuts = render(_full()).split("## Cuts and choices")[1].split("## Not run")[0]
+    assert f"{report.DEFAULT_CAP_MIN}-minute cap" in cuts
+    assert f"over {report.WARM_MAX_S} s (`WARM_MAX_S`)" in cuts
+    assert "`METHOD_NS`" in cuts
+    assert "`SWEEP_CELLS`" in cuts
+    assert "`faiss-lloyd` random 1M x 65536 (est. 3.1 h)" in cuts
+    assert "4-6 %" in cuts
+    assert "option B" in cuts
+    assert cuts.count("\n| ") >= len(report.notes.STATIC_CUTS) + 7
+
+
+def test_precision_summary_ratio_and_caution() -> None:
+    lines = report.precision_summary([prec(s, reduced_gap=0.4, other_gap=0.8) for s in range(3)])
+    text = "\n".join(lines)
+    assert "| random | euclidean | 100k | 1024 | 0.50 | 0.50 |" in text
+    assert "- random: ratio 0.50-0.50." in text
+    assert report.notes.OPTION_B_CAUTION in text
+
+
+def test_fork_comparison() -> None:
+    old = [_main("gpu-a", 2.0, 100.0, key="a|cold"), rec("gpu-a", 0, 1.0, 100.0, key="a|warm")]
+    new = [_main("gpu-a", 2.5, 100.0, key="a|cold"), rec("gpu-a", 0, 1.1, 100.0, key="a|warm")]
+    text = "\n".join(report.fork_comparison(new, old, [prec(0)], [prec(0)]))
+    assert "2 matching records" in text
+    assert "median 1.10" in text
+    assert "+0.500 s" in text
+    assert "0 of 4 variant drift_gap medians differ" in text
+    assert "drift is 0 in 1 of 1 cells" in text

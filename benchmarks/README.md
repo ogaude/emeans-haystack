@@ -172,6 +172,14 @@ hatch run bench-cpu:run report.py
 contradict the earlier precision spike). `report.py` writes `RESULTS.md` from `results/speed.jsonl` and
 `results/precision.jsonl`.
 
+The published page also compares the Triton records with those of the earlier fork build, which were replaced by
+the `emeans-rocm` 0.2.5 rerun and are kept locally only. To include that section, pass the dropped records:
+
+```bash
+hatch run bench-cpu:run report.py --fork-speed scratch/dropped-fork-gpu-speed-20261126T112236.jsonl \
+  --fork-precision scratch/dropped-fork-gpu-precision-20261126T112236.jsonl
+```
+
 ## What is committed
 
 Committed: the scripts, tests, `RESULTS.md` and `results/*.jsonl` (records carry no hostname or username; the

@@ -17,9 +17,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import report_notes as notes
 from methods import METHODS
+from precision import KS as PRECISION_KS
 from precision import PCell, precision_grid
-from run_grid import Cell, full_grid
+from run_grid import DEFAULT_CAP_MIN, METHOD_NS, NS, SEEDS, SWEEP_CELLS, SWEEP_PASSES, WARM_MAX_S, Cell, full_grid
 
 BENCH_DIR = Path(__file__).resolve().parent
 OBJECTIVE_TOLERANCE = 0.005
@@ -32,6 +34,16 @@ PRECISION_VARIANTS = ("fp16", "bf16", "fp32_rerun", "fp32_other_seed")
 FLOOR_VARIANTS = ("round16", "roundbf")
 REDUCED = ("fp16", "bf16")
 SPIKE_CONSISTENT = "consistent with the Phase 2 spike"
+CPU_ONLY_WINS = "CPU e-means wins (CPU only)"
+EMEANS_CPU = "emeans-cpu"
+LLOYD_METHODS = ("faiss-lloyd", "sklearn-lloyd")
+SKLEARN_MAX_ITER = 300
+FAISS_NITER = 25
+DEFAULT_PASSES = 5.0
+DRIFT_DIFF = 0.005
+PER_PASS_SAME = 0.05
+DEGENERATE_ROWS_PER_CENTROID = 2
+SAME_OBJECTIVE = 1e-4
 _BIG = 1000
 
 
@@ -570,6 +582,7 @@ def render_precision(records: list[dict[str, Any]]) -> list[str]:
         "",
     ]
     out += _table(_PRECISION_HEADER, floor)
+    out += precision_summary(records)
     problems = [f"{r['key']}: {r.get('status')}: {r.get('reason')}" for r in records if r.get("status") != "ok"]
     if problems:
         out += ["Cells without a result:", "", *[f"- {p}" for p in problems], ""]
@@ -577,9 +590,812 @@ def render_precision(records: list[dict[str, Any]]) -> list[str]:
     if contradictions:
         out += ["Spike check: results contradict the Phase 2 spike; reported as measured, guidance not changed:", ""]
         out += [f"- {m}" for m in contradictions]
-        out.append("")
+        out += [
+            "",
+            (
+                "Each contradiction is a reduced-precision drift equal to, not below, the FP32 other-seed drift "
+                "(see the ratio table above). The owner accepted them as known and chose option B on 2026-11-23: "
+                "the caution above, no other change to the precision guidance."
+            ),
+            "",
+        ]
     else:
         out += [f"Spike check: {SPIKE_CONSISTENT}.", ""]
+    return out
+
+
+def _n_label(n: int) -> str:
+    return f"{n // 1_000_000}M" if n % 1_000_000 == 0 else f"{n // 1000}k"
+
+
+def _cell_label(data: str, n: int, k: int) -> str:
+    return f"{data} {_n_label(n)} x {k}"
+
+
+def _pct(value: float) -> str:
+    return f"{value * 100:+.2f} %"
+
+
+def _obj(row: Row) -> str:
+    return f"{row.objective:.5g}"
+
+
+def _passes(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value:g} pass" if value == 1 else f"{value:g} passes"
+
+
+def _per_pass_cost(emeans: Row, lloyd: Row) -> str:
+    """How e-means' cost per pass compares with Lloyd's, in words, with both values."""
+    mine, theirs = _per_pass(emeans), _per_pass(lloyd)
+    if not mine or not theirs:
+        return "per-pass cost not recorded"
+    rel = mine / theirs - 1
+    values = f"{_num(mine)} vs {_num(theirs)} s/pass"
+    if abs(rel) <= PER_PASS_SAME:
+        return f"a pass costs about the same ({values})"
+    return f"an e-means pass costs {rel * 100:+.0f} % ({values})"
+
+
+def _per_pass(row: Row) -> float | None:
+    """Seconds per pass of a row: its median time over its median passes used."""
+    return row.seconds / row.passes_used if row.passes_used else None
+
+
+SweepCell = tuple[str, str, int, int]
+
+
+def _sweep_points(rows: Iterable[Row]) -> dict[SweepCell, dict[str, dict[float, Row]]]:
+    """Sweep rows by cell, method and requested passes; the cold row when there is one, else the warm row."""
+    out: dict[SweepCell, dict[str, dict[float, Row]]] = defaultdict(lambda: defaultdict(dict))
+    for r in rows:
+        if r.kind != "sweep" or r.passes_requested is None:
+            continue
+        slot = out[(r.data, r.mode, r.n, r.k)][r.method]
+        if r.passes_requested not in slot or r.timing == "cold":
+            slot[r.passes_requested] = r
+    return out
+
+
+def _main_points(rows: Iterable[Row]) -> dict[SweepCell, dict[tuple[str, str, str], Row]]:
+    """Main rows by cell and (method, backend, precision); the cold row when there is one, else the warm row."""
+    out: dict[SweepCell, dict[tuple[str, str, str], Row]] = defaultdict(dict)
+    for r in rows:
+        if r.kind != "main":
+            continue
+        slot = out[(r.data, r.mode, r.n, r.k)]
+        key = (r.method, r.backend, r.precision)
+        if key not in slot or r.timing == "cold":
+            slot[key] = r
+    return out
+
+
+@dataclass(frozen=True)
+class PassReach:
+    """How many swept e-means passes reach one Lloyd method's objective at its largest swept pass count."""
+
+    cell: SweepCell
+    lloyd: Row
+    emeans: Row | None
+    earlier: Row | None
+    emeans_default: Row | None
+    lloyd_to_default: Row | None
+    lloyd_points: tuple[Row, ...]
+    emeans_points: tuple[Row, ...]
+
+    @property
+    def emeans_last(self) -> Row:
+        """The e-means point with the most passes (its s/pass is the least affected by start-up)."""
+        return self.emeans_points[-1]
+
+    @property
+    def pass_ratio(self) -> str:
+        """Lloyd passes over e-means passes, as a range: e-means reached the target between two swept points."""
+        if self.emeans is None or not self.lloyd.passes_used or not self.emeans.passes_used:
+            return "-"
+        low = self.lloyd.passes_used / self.emeans.passes_used
+        if self.earlier is None or not self.earlier.passes_used:
+            return f">= {low:.1f}x"
+        return f"{low:.1f}-{self.lloyd.passes_used / self.earlier.passes_used:.1f}x"
+
+    @property
+    def time_ratio(self) -> float | None:
+        """Lloyd seconds over the e-means seconds that reached the same objective (both CPU, cold)."""
+        return self.lloyd.seconds / self.emeans.seconds if self.emeans is not None and self.emeans.seconds else None
+
+
+def passes_to_objective(rows: Iterable[Row], emeans: str = EMEANS_CPU) -> list[PassReach]:
+    """
+    Find, per sweep cell and Lloyd method, the fewest swept e-means passes that reach Lloyd's objective.
+
+    The target is Lloyd's median objective at its largest swept pass count. "Reach" means a median objective at or
+    below the target (lower is better); nothing is interpolated between swept points.
+
+    :param rows: Aggregated rows.
+    :param emeans: The e-means method to compare.
+    :returns: One entry per (sweep cell, Lloyd method) that has both methods.
+    """
+    out = []
+    for cell, methods in sorted(_sweep_points(rows).items()):
+        mine = methods.get(emeans)
+        if not mine:
+            continue
+        points = [mine[p] for p in sorted(mine)]
+        for lloyd in LLOYD_METHODS:
+            theirs = methods.get(lloyd)
+            if not theirs:
+                continue
+            target = theirs[max(theirs)]
+            index = next((i for i, r in enumerate(points) if r.objective <= target.objective), None)
+            default = mine.get(DEFAULT_PASSES)
+            match = (
+                next((theirs[p] for p in sorted(theirs) if theirs[p].objective <= default.objective), None)
+                if default is not None
+                else None
+            )
+            out.append(
+                PassReach(
+                    cell=cell,
+                    lloyd=target,
+                    emeans=points[index] if index is not None else None,
+                    earlier=points[index - 1] if index else None,
+                    emeans_default=default,
+                    lloyd_to_default=match,
+                    lloyd_points=tuple(theirs[p] for p in sorted(theirs)),
+                    emeans_points=tuple(points),
+                )
+            )
+    return out
+
+
+def _render_passes(reaches: list[PassReach]) -> list[str]:
+    out = [
+        "## Passes to the same objective",
+        "",
+        (
+            "The measured advantage of e-means is fewer passes (epochs) to reach the same objective, not faster "
+            "passes: on CPU one e-means pass costs about as much as one Lloyd iteration. Target: the Lloyd's "
+            "k-means median objective at its largest swept pass count (25 requested; passes actually used shown). "
+            "`e-means passes`: the fewest swept CPU e-means passes whose median objective is at or below the target. "
+            f"Swept points are {', '.join(f'{p:g}' for p in SWEEP_PASSES)}, nothing is interpolated, so the pass "
+            "ratio is a range: e-means got there after the previous point and by this one. `one step earlier` is "
+            "the previous point's distance to the target. `Lloyd to match e-means at 5`: the fewest swept Lloyd "
+            "passes reaching CPU e-means' objective at its default 5 passes. Seconds are cold medians on the same "
+            "CPU; s/pass is taken from each method's 25-pass point."
+        ),
+        "",
+    ]
+    if not reaches:
+        return [*out, "No sweep records.", ""]
+    body = []
+    for r in reaches:
+        data, _mode, n, k = r.cell
+        earlier = "-"
+        if r.earlier is not None:
+            earlier = f"{_passes(r.earlier.passes_used)}: {_pct(r.earlier.objective / r.lloyd.objective - 1)}"
+        match = "-"
+        if r.emeans_default is not None:
+            match = f"{r.lloyd_to_default.passes_used:g}" if r.lloyd_to_default else f"not within {max_passes(r)}"
+        ratio = r.time_ratio
+        body.append(
+            [
+                data, _n_label(n), str(k), r.lloyd.method, _num(r.lloyd.passes_used), _obj(r.lloyd),
+                _num(_per_pass(r.lloyd)), _num(r.lloyd.seconds),
+                _num(r.emeans.passes_used) if r.emeans else f"not within {max_passes(r)}",
+                _obj(r.emeans) if r.emeans else "-", _num(_per_pass(r.emeans_last)),
+                _num(r.emeans.seconds) if r.emeans else "-", r.pass_ratio,
+                f"{ratio:.1f}x" if ratio else "-", earlier, match,
+            ]
+        )  # fmt: skip
+    header = [
+        "data", "n", "k", "Lloyd method", "Lloyd passes used", "Lloyd objective", "Lloyd s/pass", "Lloyd s",
+        "e-means passes", "e-means objective", "e-means s/pass", "e-means s", "pass ratio", "time ratio",
+        "one step earlier", "Lloyd to match e-means at 5",
+    ]  # fmt: skip
+    return out + _table(header, body)
+
+
+def max_passes(reach: PassReach) -> str:
+    """The largest swept pass count of a comparison, for `not within N` cells."""
+    return f"{max(reach.lloyd.passes_requested or 0, reach.emeans_last.passes_requested or 0):g}"
+
+
+@dataclass(frozen=True)
+class MainCompare:
+    """CPU e-means at its default passes against the best Lloyd's k-means run of one main cell."""
+
+    cell: SweepCell
+    emeans: Row
+    lloyd: Row | None
+    cpu_lloyd: tuple[Row, ...]
+
+    def gap_to(self, method: str) -> float | None:
+        """Relative objective difference of e-means to one Lloyd method's row, or None when it did not run."""
+        row = next((r for r in self.cpu_lloyd if r.method == method), None)
+        return self.emeans.objective / row.objective - 1 if row else None
+
+    @property
+    def gap(self) -> float | None:
+        """Relative objective difference of e-means to the best Lloyd (negative: e-means lower, better)."""
+        return self.emeans.objective / self.lloyd.objective - 1 if self.lloyd else None
+
+    @property
+    def cpu_only_win(self) -> bool:
+        """CPU e-means is faster than every CPU Lloyd and within the objective tolerance of the best one."""
+        if not self.cpu_lloyd or self.lloyd is None:
+            return False
+        faster = all(self.emeans.seconds < r.seconds for r in self.cpu_lloyd)
+        return faster and self.emeans.objective <= self.lloyd.objective * (1 + OBJECTIVE_TOLERANCE)
+
+
+def main_comparison(rows: Iterable[Row]) -> list[MainCompare]:
+    """
+    Compare CPU e-means with the best-objective Lloyd's k-means run in every main cell (cold timings).
+
+    :param rows: Aggregated rows.
+    :returns: One entry per main cell that has a CPU e-means row.
+    """
+    out = []
+    for cell, by in sorted(_main_points(rows).items(), key=lambda kv: (kv[0][0], kv[0][2], kv[0][3])):
+        mine = [r for (method, _b, _p), r in by.items() if method == EMEANS_CPU]
+        if not mine:
+            continue
+        lloyd = [r for r in by.values() if r.engine == "lloyd" or r.method in LLOYD_METHODS]
+        best = min(lloyd, key=lambda r: r.objective) if lloyd else None
+        out.append(MainCompare(cell, mine[0], best, tuple(r for r in lloyd if r.device != "gpu")))
+    return out
+
+
+def _stop(row: Row) -> str:
+    used = row.passes_used
+    if used is None:
+        return "-"
+    if row.method == "sklearn-lloyd":
+        return f"converged (tol 1e-4) after {used:g}" if used < SKLEARN_MAX_ITER else f"max_iter {SKLEARN_MAX_ITER}"
+    cap = row.passes_requested or FAISS_NITER
+    return f"ran all {cap:g}" if used >= cap else f"stopped after {used:g} of {cap:g}"
+
+
+def _render_main_comparison(compares: list[MainCompare]) -> list[str]:
+    out = [
+        "## e-means at 5 passes vs Lloyd's k-means, per main cell",
+        "",
+        (
+            "CPU e-means at its default 5 passes against the Lloyd's k-means run (`faiss.Kmeans`, scikit-learn "
+            "`KMeans`) with the lowest median objective in the cell, at the passes it used (medians over seeds). "
+            "scikit-learn stops on `tol` 1e-4 (converged); `faiss.Kmeans` runs at most 25 passes and may stop "
+            "earlier. Cold medians on the same CPU. "
+            f"`{CPU_ONLY_WINS}`: without a GPU, CPU e-means is faster than every CPU Lloyd run and its objective is "
+            f"within {OBJECTIVE_TOLERANCE * 100:g} % of the best Lloyd median."
+        ),
+        "",
+    ]
+    body = []
+    for c in compares:
+        data, mode, n, k = c.cell
+        lloyd = c.lloyd
+        body.append(
+            [
+                data, mode, _n_label(n), str(k), f"{n / k:.1f}", _obj(c.emeans), _num(c.emeans.seconds),
+                _num(_per_pass(c.emeans)),
+                lloyd.method if lloyd else "not run", _stop(lloyd) if lloyd else "-", _obj(lloyd) if lloyd else "-",
+                _num(lloyd.seconds) if lloyd else "-", _num(_per_pass(lloyd)) if lloyd else "-",
+                _pct(c.gap) if c.gap is not None else "-", CPU_ONLY_WINS if c.cpu_only_win else "",
+            ]
+        )  # fmt: skip
+    header = [
+        "data", "mode", "n", "k", "rows per centroid", "e-means objective", "e-means s", "e-means s/pass",
+        "best Lloyd", "Lloyd passes", "Lloyd objective", "Lloyd s", "Lloyd s/pass", "e-means vs Lloyd", "mark",
+    ]  # fmt: skip
+    return out + _table(header, body)
+
+
+@dataclass(frozen=True)
+class GpuSpeedup:
+    """Best GPU e-means end-to-end time against CPU e-means in one main cell and timing."""
+
+    cell: SweepCell
+    timing: str
+    cpu: Row
+    gpu: Row
+
+    @property
+    def speedup(self) -> float:
+        """CPU e-means seconds over the best GPU end-to-end seconds."""
+        return self.cpu.seconds / self.gpu.end_to_end
+
+
+def gpu_speedups(rows: Iterable[Row]) -> list[GpuSpeedup]:
+    """
+    List, per main cell and timing, the best GPU e-means row against CPU e-means.
+
+    :param rows: Aggregated rows.
+    :returns: Entries for every main cell and timing that has both.
+    """
+    by: dict[tuple[SweepCell, str], list[Row]] = defaultdict(list)
+    for r in rows:
+        if r.kind == "main":
+            by[((r.data, r.mode, r.n, r.k), r.timing)].append(r)
+    out = []
+    for (cell, timing), sel in sorted(by.items(), key=lambda kv: (kv[0][0][0], kv[0][0][2], kv[0][0][3], kv[0][1])):
+        cpu = [r for r in sel if r.method == EMEANS_CPU]
+        gpu = [r for r in sel if r.engine == "e-means" and r.device == "gpu"]
+        if cpu and gpu:
+            out.append(GpuSpeedup(cell, timing, cpu[0], min(gpu, key=lambda r: r.end_to_end)))
+    return out
+
+
+def _speedup_line(s: GpuSpeedup) -> str:
+    data, _mode, n, k = s.cell
+    return (
+        f"{s.speedup:.1f}x at {_cell_label(data, n, k)} ({s.timing}: `{s.gpu.method}` {_num(s.gpu.end_to_end)} s "
+        f"end-to-end vs {_num(s.cpu.seconds)} s)"
+    )
+
+
+def _render_where(summary: list[str], speedups: list[GpuSpeedup], compares: list[MainCompare]) -> list[str]:
+    out = ["## Where the GPU does not help / where CPU e-means wins", ""]
+    out += [*summary, ""] if summary else [f"No cell carries `{GPU_NOT_HELP}` or `{CPU_WINS}`.", ""]
+    if speedups:
+        slower = [s for s in speedups if s.speedup <= 1]
+        cells = {s.cell for s in speedups}
+        if not slower:
+            small = min(cells, key=lambda c: c[2] * c[3])
+            out.append(
+                f"- The GPU helps in every main cell measured: the best GPU e-means run (end-to-end, transfer "
+                f"included) is faster than CPU e-means in all {len(cells)} cells, cold and warm, including the "
+                f"smallest n x k ({_nxk(small[2], small[3])})."
+            )
+        low = min(speedups, key=lambda s: s.speedup)
+        high = max(speedups, key=lambda s: s.speedup)
+        out.append(f"- Smallest GPU speedup over CPU e-means: {_speedup_line(low)}.")
+        out.append(f"- Largest: {_speedup_line(high)}.")
+        out.append(
+            "- CPU e-means is never the fastest method here, because a GPU e-means row is in every cell; "
+            f"`{CPU_WINS}` therefore never applies on this host."
+        )
+    wins = [c for c in compares if c.cpu_only_win]
+    if compares:
+        labels = ", ".join(_cell_label(c.cell[0], c.cell[2], c.cell[3]) for c in wins) or "none"
+        out.append(
+            f"- Without a GPU, `{CPU_ONLY_WINS}` in {len(wins)} of {len(compares)} main cells (faster than every CPU "
+            f"Lloyd run, objective within {OBJECTIVE_TOLERANCE * 100:g} %): {labels}."
+        )
+        lost = [c for c in compares if c.gap is not None and c.gap > OBJECTIVE_TOLERANCE]
+        if lost:
+            text = "; ".join(
+                f"{_cell_label(c.cell[0], c.cell[2], c.cell[3])} {_pct(c.gap or 0.0)} ({c.cell[2] / c.cell[3]:.1f} "
+                "rows per centroid)"
+                for c in lost
+            )
+            out.append(f"- Lloyd's k-means has the better objective at: {text}.")
+        none = [c for c in compares if c.lloyd is None]
+        if none:
+            labels = ", ".join(_cell_label(c.cell[0], c.cell[2], c.cell[3]) for c in none)
+            out.append(f"- No Lloyd run, so no comparison: {labels} (see Not run).")
+    out.append("")
+    return out
+
+
+def _render_headline(
+    reaches: list[PassReach], compares: list[MainCompare], speedups: list[GpuSpeedup], host: str
+) -> list[str]:
+    out = ["## Headline", ""]
+    reached = [r for r in reaches if r.emeans is not None and r.lloyd.passes_used]
+    if reached and len(reached) == len(reaches):
+        fewer = all((r.emeans.passes_used or 0) < (r.lloyd.passes_used or 0) for r in reached if r.emeans)
+        if fewer:
+            out.append(
+                "- e-means needs fewer passes (epochs) than Lloyd's k-means (`faiss.Kmeans`, scikit-learn `KMeans`) "
+                f"to reach the same objective, in all {len(reached)} sweep comparisons. It is not faster per pass on "
+                "CPU; the wall-time gain comes from the fewer passes."
+            )
+    faiss = [r for r in reaches if r.lloyd.method == "faiss-lloyd" and r.emeans is not None]
+    for r in faiss:
+        data, _mode, n, k = r.cell
+        assert r.emeans is not None  # noqa: S101
+        out.append(
+            f"- {_cell_label(data, n, k)}: CPU e-means reaches the objective `faiss.Kmeans` has after "
+            f"{_passes(r.lloyd.passes_used)} ({_obj(r.lloyd)}) within {_passes(r.emeans.passes_used)} "
+            f"({_obj(r.emeans)}), pass ratio {r.pass_ratio}; {_per_pass_cost(r.emeans_last, r.lloyd)}, so "
+            f"{_num(r.emeans.seconds)} s vs {_num(r.lloyd.seconds)} s on the same CPU."
+        )
+    sk = [r for r in reaches if r.lloyd.method == "sklearn-lloyd"]
+    if sk:
+        text = "; ".join(
+            f"{_cell_label(r.cell[0], r.cell[2], r.cell[3])}: {_num(_per_pass(r.emeans_last))} vs "
+            f"{_num(_per_pass(r.lloyd))} s/pass"
+            for r in sk
+        )
+        out.append(
+            f"- Per pass, CPU e-means is not faster than Lloyd: scikit-learn `KMeans` is cheaper per pass at 100k "
+            f"({text}), so the wall-time gain there is smaller than the pass gain."
+        )
+    for r in reaches:
+        data, _mode, n, k = r.cell
+        if r.lloyd.method != "faiss-lloyd" or n < max(NS) or len(r.lloyd_points) <= 1:
+            continue
+        before = r.lloyd_points[-2]
+        if r.lloyd.objective < before.objective and r.lloyd.passes_used == r.lloyd.passes_requested:
+            out.append(
+                f"- At {_cell_label(data, n, k)}, `faiss.Kmeans` used all {r.lloyd.passes_used:g} passes and was "
+                f"still improving ({before.passes_used:g} -> {r.lloyd.passes_used:g} passes: {_obj(before)} -> "
+                f"{_obj(r.lloyd)}), so 1M comparisons are against Lloyd at 25 passes, not at convergence."
+            )
+    seen: set[SweepCell] = set()
+    for r in reaches:
+        data, _mode, n, k = r.cell
+        if r.cell in seen or r.emeans_default is None:
+            continue
+        seen.add(r.cell)
+        after = [p for p in r.emeans_points if (p.passes_requested or 0) > DEFAULT_PASSES]
+        if any(p.objective > r.emeans_default.objective for p in after):
+            values = " / ".join(_obj(p) for p in (r.emeans_default, *after))
+            passes = "/".join(f"{p.passes_used:g}" for p in (r.emeans_default, *after))
+            out.append(
+                f"- {_cell_label(data, n, k)}: after 5 passes the CPU e-means objective is flat and not monotone "
+                f"({passes} passes: {values}); reported as found."
+            )
+    lost = [c for c in compares if c.gap is not None and c.gap > OBJECTIVE_TOLERANCE]
+    beat = [c for c in compares if c.gap is not None and c.gap <= 0]
+    total = [c for c in compares if c.gap is not None]
+    if total:
+        text = ", ".join(
+            f"{_cell_label(c.cell[0], c.cell[2], c.cell[3])} ({_pct(c.gap or 0.0)}, {c.cell[2] / c.cell[3]:.1f} "
+            "rows per centroid)"
+            for c in lost
+        )
+        out.append(
+            f"- At its default 5 passes CPU e-means has a lower objective than the best Lloyd's k-means run in "
+            f"{len(beat)} of {len(total)} main cells"
+            + (f"; Lloyd is better at {text}." if lost else ".")
+            + (
+                " At 1.5 rows per centroid (100k x 65536) the problem is degenerate; that cell is an edge case."
+                if any(c.cell[2] / c.cell[3] < DEGENERATE_ROWS_PER_CENTROID for c in lost)
+                else ""
+            )
+        )
+    if speedups:
+        big = max(speedups, key=lambda s: (s.cell[2] * s.cell[3], s.cell[0] == "cohere", s.timing == "cold"))
+        low = min(speedups, key=lambda s: s.speedup)
+        out.append(
+            f"- GPU ({host}): the best GPU e-means run is faster than CPU e-means in every main cell; "
+            f"{_speedup_line(big)}; smallest gain {_speedup_line(low)}."
+        )
+    out.append("")
+    return out
+
+
+def _render_claims(reaches: list[PassReach], compares: list[MainCompare], speedups: list[GpuSpeedup]) -> list[str]:
+    out = [
+        "## Upstream claims, checked",
+        "",
+        (
+            f"Quoted from {notes.UPSTREAM_SOURCE} (square brackets mark words added here); the measured lines are "
+            "computed from the tables on this page."
+        ),
+        "",
+        f"1. > {notes.CLAIM_EPOCHS}",
+        "",
+    ]
+    for r in reaches:
+        if r.emeans is None:
+            out.append(f"   - {_cell_label(r.cell[0], r.cell[2], r.cell[3])} vs `{r.lloyd.method}`: not reached.")
+            continue
+        out.append(
+            f"   - {_cell_label(r.cell[0], r.cell[2], r.cell[3])} vs `{r.lloyd.method}` at "
+            f"{_passes(r.lloyd.passes_used)}: e-means within {_passes(r.emeans.passes_used)}, pass ratio "
+            f"{r.pass_ratio}."
+        )
+    out += ["", f"2. > {notes.CLAIM_FIVE}", ""]
+    for method, label in (
+        ("sklearn-lloyd", "against scikit-learn `KMeans` run to convergence (tol 1e-4; 100k rows)"),
+        ("faiss-lloyd", "against `faiss.Kmeans` at up to 25 passes"),
+    ):
+        group = [(c, c.gap_to(method)) for c in compares if c.gap_to(method) is not None]
+        if not group:
+            continue
+        worse = [(c, g) for c, g in group if (g or 0.0) > 0]
+        text = ", ".join(f"{_cell_label(c.cell[0], c.cell[2], c.cell[3])} {_pct(g or 0.0)}" for c, g in worse)
+        out.append(
+            f"   - {label}: e-means at 5 passes is lower in {len(group) - len(worse)} of {len(group)} cells"
+            + (f"; higher at {text}." if worse else ".")
+        )
+    none = [c for c in compares if c.lloyd is None]
+    if none:
+        out.append(
+            "   - Not checked (no Lloyd run, see Not run): "
+            + ", ".join(_cell_label(c.cell[0], c.cell[2], c.cell[3]) for c in none)
+            + "."
+        )
+    out += ["", f"3. > {notes.CLAIM_WALL}", ""]
+    ratios = [(r, r.time_ratio) for r in reaches if r.time_ratio]
+    for r, ratio in ratios:
+        out.append(
+            f"   - CPU, {_cell_label(r.cell[0], r.cell[2], r.cell[3])}: e-means reaches `{r.lloyd.method}`'s "
+            f"{r.lloyd.passes_used:g}-pass objective {ratio:.1f}x faster in wall time."
+        )
+    out.append(
+        "   - Per pass, CPU e-means is not faster than Lloyd (see the s/pass columns); the wall-time gain comes "
+        "from fewer passes."
+    )
+    out += ["", f"4. > {notes.CLAIM_GPU}", ""]
+    if speedups:
+        below = [s for s in speedups if s.cell[2] * s.cell[3] < ABOVE_1E10]
+        if below:
+            low = min(below, key=lambda s: s.speedup)
+            out.append(
+                f"   - On this host the GPU already helps below 1e10: smallest gain below 1e10 is {_speedup_line(low)}."
+            )
+    out.append("")
+    return out
+
+
+_CAP_PREFIX = "not run: est. "
+
+
+def _capped(records: list[dict[str, Any]]) -> dict[tuple[str, str, int, int], list[float]]:
+    """Estimated hours of the cells the time cap left out, by (method, data, n, k)."""
+    found: dict[tuple[str, str, int, int], list[float]] = defaultdict(list)
+    for r in records:
+        reason = r.get("skipped_reason") or ""
+        if r.get("status") != "ok" and reason.startswith(_CAP_PREFIX) and r.get("timing") == "cold":
+            try:
+                hours = float(reason.removeprefix(_CAP_PREFIX).split()[0])
+            except (IndexError, ValueError):
+                continue
+            found[(r["method"], r["data"], r["n"], r["k"])].append(hours)
+    return found
+
+
+def _render_cuts(records: list[dict[str, Any]], rows: list[Row], reaches: list[PassReach]) -> list[str]:
+    capped = _capped(records)
+    main = _main_points(rows)
+    hidden = []
+    for (method, data, n, k), estimates in sorted(capped.items()):
+        by = next((v for c, v in main.items() if (c[0], c[2], c[3]) == (data, n, k)), {})
+        cpu = [r for (m, _b, _p), r in by.items() if m == EMEANS_CPU]
+        gpu = [r for r in by.values() if r.device == "gpu"]
+        extra = ""
+        if cpu:
+            extra = f"; CPU e-means ran it in {_num(cpu[0].seconds)} s ({cpu[0].seconds / 60:.0f} min)"
+        if gpu:
+            extra += f", GPU e-means in {_num(min(r.end_to_end for r in gpu))}-{_num(max(r.end_to_end for r in gpu))} s"
+        low, high = min(estimates), max(estimates)
+        span = f"{low:.1f} h" if low == high else f"{low:.1f}-{high:.1f} h"
+        hidden.append(f"`{method}` {_cell_label(data, n, k)} (est. {span}){extra}")
+    warm_skipped = [r for r in records if r.get("timing") == "warm" and r.get("skipped_reason") == "skipped (cost)"]
+    cpu_warm_methods = sorted({r["method"] for r in warm_skipped})
+    still = [
+        r for r in reaches
+        if r.lloyd.method == "faiss-lloyd" and r.cell[2] == max(NS) and len(r.lloyd_points) > 1
+        and r.lloyd.objective < r.lloyd_points[-2].objective
+    ]  # fmt: skip
+    improving = "; ".join(
+        f"{_cell_label(r.cell[0], r.cell[2], r.cell[3])} {r.lloyd_points[-2].passes_used:g} -> "
+        f"{r.lloyd.passes_used:g} passes: {_obj(r.lloyd_points[-2])} -> {_obj(r.lloyd)}"
+        for r in still
+    )
+    sweep_cells = ", ".join(_cell_label(d, n, k) for d, n, k in SWEEP_CELLS)
+    sk_ns = ", ".join(_n_label(n) for n in METHOD_NS.get("sklearn-lloyd", NS))
+    computed = [
+        (
+            f"scikit-learn runs at {sk_ns} rows only (`METHOD_NS` in `run_grid.py`)",
+            "at 1M it would cost most of a 30-40 h CPU grid for a reference point `faiss-lloyd` already gives",
+            "scikit-learn speed and objective at 1M; there `faiss-lloyd` is the only Lloyd baseline",
+        ),
+        (
+            (
+                f"{DEFAULT_CAP_MIN}-minute cap per cell and seed (`DEFAULT_CAP_MIN`); a cell whose one-pass probe "
+                "estimate exceeds it is not run"
+            ),
+            "one Lloyd cell at 1M x 65536 would take about 3 h per seed",
+            ("not run: " + "; ".join(hidden) + ". No Lloyd objective there, so no e-means vs Lloyd comparison")
+            if hidden
+            else "nothing: no cell was capped",
+        ),
+        (
+            f"Warm repeat skipped for CPU cells estimated over {WARM_MAX_S} s (`WARM_MAX_S`)",
+            "a warm repeat would double the cost of the largest CPU cells",
+            (
+                f"warm timings of {len(warm_skipped)} cell-seeds ({', '.join(cpu_warm_methods)}); their cold times are "
+                "shown"
+            ),
+        ),
+        (
+            (
+                f"Pass sweep ({', '.join(f'{p:g}' for p in SWEEP_PASSES)} passes) on {len(SWEEP_CELLS)} cells only "
+                f"(`SWEEP_CELLS`): {sweep_cells}"
+            ),
+            "each sweep point is a full run per method and seed",
+            "passes-to-objective at other sizes and k; the main cells run fixed passes",
+        ),
+        (
+            f"`faiss.Kmeans` capped at `niter` {FAISS_NITER}; e-means at its default 5 passes",
+            "fixed, stated passes per method; a Lloyd pass at 1M x 16384 costs about 2 min on CPU",
+            f"Lloyd at convergence at 1M: it was still improving ({improving})" if improving else "nothing measured",
+        ),
+        (
+            f"{len(SEEDS)} seeds per cell (`SEEDS`)",
+            "cost",
+            "the spread is a min-max over 3 seeds, not a confidence interval",
+        ),
+        (
+            f"Precision study at k = {', '.join(str(k) for k in PRECISION_KS)} only",
+            "cost (6 fits per cell and seed)",
+            "precision effects at larger k",
+        ),
+    ]
+    out = [
+        "## Cuts and choices",
+        "",
+        "Every cut made to save time or memory, with its reason and what it hides.",
+        "",
+    ]
+    return out + _table(
+        ["cut or choice", "reason", "what it hides"], [list(row) for row in computed + list(notes.STATIC_CUTS)]
+    )
+
+
+def _render_gpu_engines(rows: list[Row]) -> list[str]:
+    out = ["## GPU engines", "", notes.GPU_ENGINE_NOTE, ""]
+    main = _main_points(rows)
+    cells = [c for c, by in main.items() if any(r.device == "gpu" for r in by.values())]
+    if not cells:
+        return out
+    cell = max(cells, key=lambda c: (c[2] * c[3], c[0] == "cohere"))
+    data, mode, n, k = cell
+    body = []
+    for (method, backend, precision), r in sorted(main[cell].items()):
+        if r.engine != "e-means":
+            continue
+        body.append(
+            [method, backend, precision, _num(r.passes_used), _num(r.seconds), _num(r.end_to_end),
+             f"{r.objective:.5g} [{r.objective_min:.5g}-{r.objective_max:.5g}]"]
+        )  # fmt: skip
+    out += [f"Largest cell, {data} ({mode}) {_n_label(n)} x {k}, cold medians over seeds:", ""]
+    out += _table(["method", "backend", "precision", "passes", "cold s", "end-to-end s", "objective [min-max]"], body)
+    warm: dict[SweepCell, dict[str, Row]] = defaultdict(dict)
+    for r in rows:
+        if r.kind == "main" and r.timing == "warm" and r.device == "gpu":
+            warm[(r.data, r.mode, r.n, r.k)][r.method] = r
+    pairs = [
+        (c, by["emeans-gpu-native-fp32"], by["emeans-gpu-triton-fp32"])
+        for c, by in sorted(warm.items())
+        if "emeans-gpu-native-fp32" in by and "emeans-gpu-triton-fp32" in by
+    ]
+    if pairs:
+        native = [c for c, a, b in pairs if a.end_to_end < b.end_to_end]
+        out.append(
+            f"Native FP32 is faster than Triton FP32 (warm, end-to-end) in {len(native)} of {len(pairs)} main cells"
+            + (": " + ", ".join(_cell_label(c[0], c[2], c[3]) for c in native) + "." if native else ".")
+        )
+        out.append("")
+    return out
+
+
+def fork_comparison(
+    speed: list[dict[str, Any]],
+    fork_speed: list[dict[str, Any]],
+    precision: list[dict[str, Any]],
+    fork_precision: list[dict[str, Any]],
+) -> list[str]:
+    """
+    Compare emeans-rocm 0.2.5 records with the earlier fork build's records of the same cells.
+
+    :param speed: Current speed records.
+    :param fork_speed: Fork-build speed records (same keys).
+    :param precision: Current precision records.
+    :param fork_precision: Fork-build precision records (same keys).
+    :returns: Markdown lines; one line per finding.
+    """
+    now = {r["key"]: r for r in speed if r.get("status") == "ok"}
+    pairs = [(r, now[r["key"]]) for r in fork_speed if r.get("status") == "ok" and r.get("key") in now]
+    out = ["### emeans-rocm 0.2.5 vs the earlier fork build", "", notes.FORK_NOTE, ""]
+    if pairs:
+        warm = [b["seconds"] / a["seconds"] for a, b in pairs if a["timing"] == "warm" and a["seconds"]]
+        cold = [b["seconds"] - a["seconds"] for a, b in pairs if a["timing"] == "cold"]
+        out.append(
+            f"- Speed: {len(pairs)} matching records. Warm time ratio 0.2.5 / fork, median "
+            f"{statistics.median(warm):.2f} [{min(warm):.2f}-{max(warm):.2f}]; cold time 0.2.5 - fork, median "
+            f"{statistics.median(cold):+.3f} s."
+        )
+        for precision_name in sorted({a.get("precision") or "" for a, _ in pairs}):
+            sel = [(a, b) for a, b in pairs if a.get("precision") == precision_name and a["timing"] == "cold"]
+            deltas = [abs(b["objective"] / a["objective"] - 1) for a, b in sel if a["kind"] == "main"]
+            same = sum(1 for d in deltas if d <= SAME_OBJECTIVE)
+            if deltas:
+                out.append(
+                    f"- {precision_name} main-cell objectives: largest difference {max(deltas) * 100:.3f} %, "
+                    f"{same} of {len(deltas)} records within 0.01 %."
+                )
+        groups: dict[tuple, tuple[list[float], list[float]]] = defaultdict(lambda: ([], []))
+        for a, b in pairs:
+            if a["timing"] == "cold" and a["kind"] == "main" and a.get("precision") == "fp32":
+                cell = (a["method"], a["data"], a["n"], a["k"])
+                groups[cell][0].append(a["objective"])
+                groups[cell][1].append(b["objective"])
+        if groups:
+            inside = sum(1 for old, new in groups.values() if min(old) <= statistics.median(new) <= max(old))
+            out.append(
+                f"- fp32 main cells: the 0.2.5 median objective lies inside the fork build's min-max over seeds in "
+                f"{inside} of {len(groups)} cells."
+            )
+    now_p = {r["key"]: r for r in precision if r.get("status") == "ok"}
+    p_pairs = [(r, now_p[r["key"]]) for r in fork_precision if r.get("status") == "ok" and r.get("key") in now_p]
+    if p_pairs:
+        diffs = [
+            abs(b["variants"][v]["drift_gap_median"] - a["variants"][v]["drift_gap_median"])
+            for a, b in p_pairs
+            for v in PRECISION_VARIANTS
+            if "drift_gap_median" in a["variants"].get(v, {}) and "drift_gap_median" in b["variants"].get(v, {})
+        ]
+        zero = sum(1 for _, b in p_pairs if b["variants"].get("fp32_rerun", {}).get("drift_gap_max") == 0)
+        out.append(
+            f"- Precision: {sum(1 for d in diffs if d > DRIFT_DIFF)} of {len(diffs)} variant drift_gap medians differ "
+            f"by more than {DRIFT_DIFF} between the builds; the 0.2.5 FP32 rerun drift is 0 in {zero} of "
+            f"{len(p_pairs)} cells."
+        )
+    out.append("")
+    return out
+
+
+def precision_summary(records: list[dict[str, Any]]) -> list[str]:
+    """
+    Summarise reduced-precision drift against the FP32 other-seed baseline, per cell.
+
+    :param records: Records as written by `precision.py`.
+    :returns: Markdown lines: a ratio table, the objective range and the precision caution.
+    """
+    aggregated = aggregate_precision(records)
+    body = []
+    ratios: dict[str, list[float]] = defaultdict(list)
+    deltas: list[float] = []
+    for group in sorted(aggregated):
+        stats = aggregated[group]
+        other = stats.get("fp32_other_seed", {})
+        if "drift_gap_median" not in other:
+            continue
+        row = [group[0], group[1], _n_label(group[2]), str(group[3])]
+        for name in REDUCED:
+            entry = stats.get(name, {})
+            if "drift_gap_median" not in entry or not other["drift_gap_median"]:
+                row.append("-")
+                continue
+            ratio = entry["drift_gap_median"] / other["drift_gap_median"]
+            ratios[group[0]].append(ratio)
+            row.append(f"{ratio:.2f}")
+            if group[0] != "random":
+                deltas += [entry["delta"][1], entry["delta"][2]]
+        row += [
+            f"{stats[name]['share'][0]:.3g}" if "share" in stats.get(name, {}) else "-"
+            for name in (*REDUCED, "fp32_other_seed")
+        ]
+        body.append(row)
+    if not body:
+        return []
+    out = [
+        "### Reduced precision against reseeding",
+        "",
+        (
+            "Ratio: FP16 or BF16 drift_gap median over the FP32 other-seed drift_gap median (1.00: reduced precision "
+            "moves the centroids as much as a new seed does). Share: median share of documents in the same cluster "
+            "as under the FP32 reference."
+        ),
+        "",
+    ]
+    out += _table(
+        ["data", "mode", "n", "k", "FP16 / reseed", "BF16 / reseed", "share FP16", "share BF16", "share reseed"], body
+    )
+    for data in sorted(ratios):
+        out.append(f"- {data}: ratio {min(ratios[data]):.2f}-{max(ratios[data]):.2f}.")
+    if deltas:
+        out.append(
+            f"- Real data: FP16/BF16 objective vs FP32 between {min(deltas):+.3f} % and {max(deltas):+.3f} % "
+            "over seeds."
+        )
+    out += ["", notes.OPTION_B_CAUTION, ""]
     return out
 
 
@@ -589,6 +1405,8 @@ def render(
     title: str = "Benchmark results",
     smoke: bool = False,
     precision_records: list[dict[str, Any]] | None = None,
+    fork_speed: list[dict[str, Any]] | None = None,
+    fork_precision: list[dict[str, Any]] | None = None,
 ) -> str:
     """
     Render RESULTS.md.
@@ -598,17 +1416,31 @@ def render(
     :param smoke: Mark the page as a smoke run, not results.
     :param precision_records: Records of the precision study; None leaves the Precision section out, an empty list
         says the study was not run.
+    :param fork_speed: Speed records of the earlier fork build; with `fork_precision`, adds the build comparison.
+    :param fork_precision: Precision records of the earlier fork build.
     :returns: Markdown text.
     """
     rows = aggregate(records)
     table, summary = _main_table(rows)
-    lines = _header(records, title, smoke) + _protocol()
+    reaches = passes_to_objective(rows)
+    compares = main_comparison(rows)
+    speedups = gpu_speedups(rows)
+    host = next(((r.get("host") or {}).get("gpu") for r in records if (r.get("host") or {}).get("gpu")), None)
+    lines = _header(records, title, smoke)
+    lines += _render_headline(reaches, compares, speedups, host or "GPU")
+    lines += _protocol()
+    lines += _render_passes(reaches)
+    lines += _render_main_comparison(compares)
+    lines += _render_claims(reaches, compares, speedups)
     lines += ["## Main results", "", "Cold and warm are `median [min-max]` seconds over seeds.", ""]
     lines += table
-    lines += ["## Where the GPU does not help / where CPU e-means wins", ""]
-    lines += [*summary, ""] if summary else ["No cell carries a mark in these records.", ""]
+    lines += _render_where(summary, speedups, compares)
+    lines += _render_gpu_engines(rows)
+    if fork_speed is not None and fork_precision is not None:
+        lines += fork_comparison(records, fork_speed, precision_records or [], fork_precision)
     lines += ["## Pass sweep", ""]
     lines += _sweep_tables(rows) or ["No sweep records.", ""]
+    lines += _render_cuts(records, rows, reaches)
     lines += ["## Not run", ""]
     lines += _not_run(records)
     if precision_records is not None:
@@ -678,6 +1510,8 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--precision", type=Path, default=None)
+    parser.add_argument("--fork-speed", type=Path, default=None, help="speed records of the earlier fork build")
+    parser.add_argument("--fork-precision", type=Path, default=None, help="precision records of the fork build")
     args = parser.parse_args()
     smoke_dir = BENCH_DIR / "scratch" / "smoke"
     results = args.results or (smoke_dir / "speed.jsonl" if args.smoke else BENCH_DIR / "results" / "speed.jsonl")
@@ -705,7 +1539,16 @@ def main() -> int:
                 sys.stdout.write(message + "\n")
         return 1 if problems or contradictions else 0
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(records, smoke=args.smoke, precision_records=precision_records), encoding="utf-8")
+    fork_speed = load_records(args.fork_speed) if args.fork_speed else None
+    fork_precision = load_records(args.fork_precision) if args.fork_precision else None
+    text = render(
+        records,
+        smoke=args.smoke,
+        precision_records=precision_records,
+        fork_speed=fork_speed,
+        fork_precision=fork_precision,
+    )
+    out.write_text(text, encoding="utf-8")
     sys.stderr.write(f"wrote {out}\n")
     return 0
 
