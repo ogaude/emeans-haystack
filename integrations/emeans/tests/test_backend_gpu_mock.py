@@ -1104,7 +1104,7 @@ def test_model_metadata_carries_emeans_rocm_label(
     assert load_model(str(path)).metadata["emeans_source"] == "emeans-rocm 0.2.5"
 
 
-@pytest.mark.parametrize(("installed", "hint"), [("0.2.5", None), (False, HINT)])
+@pytest.mark.parametrize(("installed", "hint"), [("0.2.5", None), ("0.3.0", HINT), (False, HINT)])
 def test_native_rung_hint_depends_on_emeans_rocm(
     monkeypatch: pytest.MonkeyPatch, installed: str | bool, hint: str | None
 ) -> None:

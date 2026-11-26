@@ -941,7 +941,7 @@ def _fit_gpu(
             "backend_hint": _backend_hint(
                 is_rocm=torch.version.hip is not None,
                 assignment_backend=label,
-                emeans_rocm=emeans_rocm_importable(),
+                emeans_rocm=emeans_rocm_enabled(),
             ),
             "memory_estimate_bytes": estimate,
             "fallback_reason": backend.fallback_reason,
