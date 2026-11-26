@@ -216,12 +216,33 @@ def test_gpu_reason_refuses_out_of_range_emeans_rocm(monkeypatch: pytest.MonkeyP
                 return True
 
     monkeypatch.setitem(sys.modules, "torch", FakeTorch)
+    # Patch the inputs of the range gate, not the gate itself, so the version check really runs.
     monkeypatch.setattr(_backend, "emeans_rocm_importable", lambda: True)
-    monkeypatch.setattr(_backend, "emeans_rocm_enabled", lambda: False)
-    reason = methods._gpu_reason(want_emeans_rocm=True)
-    assert reason is not None
-    assert "bench-gpu-fork env" in reason
+    monkeypatch.setattr(_backend, "_emeans_rocm_is_packaged", lambda: True)
+    monkeypatch.setattr(_backend, "_dist_version", lambda _dist: "0.3.0")
+    monkeypatch.setattr(_backend, "_UNSUPPORTED_WARNED", set())
+    assert _backend.emeans_rocm_enabled() is False
+    assert methods._gpu_reason(want_emeans_rocm=True) == "needs the bench-gpu-fork env (emeans-rocm installed)"
     assert methods._gpu_reason(want_emeans_rocm=False) is None
     refusal = precision._gpu_refusal()
     assert refusal is not None
-    assert "bench-gpu-fork env" in refusal
+    assert "emeans-rocm 0.3.0 is outside the supported range" in refusal
+
+
+def test_gpu_reason_accepts_in_range_emeans_rocm(monkeypatch: pytest.MonkeyPatch) -> None:
+    from haystack_integrations.components.preprocessors.emeans import _backend  # noqa: PLC0415
+
+    import methods  # noqa: PLC0415
+
+    class FakeTorch:
+        class cuda:  # noqa: N801
+            @staticmethod
+            def is_available() -> bool:
+                return True
+
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch)
+    monkeypatch.setattr(_backend, "emeans_rocm_importable", lambda: True)
+    monkeypatch.setattr(_backend, "_emeans_rocm_is_packaged", lambda: True)
+    monkeypatch.setattr(_backend, "_dist_version", lambda _dist: "0.2.5")
+    assert methods._gpu_reason(want_emeans_rocm=True) is None
+    assert methods._gpu_reason(want_emeans_rocm=False) == "needs the bench-gpu env (stock e-means)"
