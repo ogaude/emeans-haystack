@@ -1044,6 +1044,36 @@ def test_probe_reduced_precision_uses_emeans_class_from_emeans_rocm(
     assert engines_built() == {RocmEngine}
 
 
+class BrokenEmeansRocmFinder:
+    """Makes `import emeans_rocm` raise ImportError, as a partially uninstalled package or a mismatched faiss does."""
+
+    def find_spec(self, name: str, *_args: Any) -> ModuleSpec | None:
+        if name == "emeans_rocm":
+            msg = "cannot import name 'NumpyEmeans' from partially initialized module"
+            raise ImportError(msg)
+        return None
+
+
+def test_broken_emeans_rocm_import_falls_back_to_cpu_on_auto(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    FakeGpu(monkeypatch)
+    monkeypatch.delitem(sys.modules, "emeans_rocm")
+    monkeypatch.setattr(sys, "meta_path", [BrokenEmeansRocmFinder(), *sys.meta_path])
+    monkeypatch.setattr(_backend, "emeans_rocm_importable", lambda: True)  # found on the path, fails to import
+    env = gpu_env(is_rocm=True, emeans_rocm=True, hip_version="7.16")
+    with caplog.at_level(logging.DEBUG):
+        choice = select_backend(device="auto", n=100, k=10, gpu_threshold=1, env=env)
+    assert choice.name == "cpu"
+    assert choice.fallback_reason is not None
+    assert "ImportError" in choice.fallback_reason
+    assert "rocm-triton" in choice.fallback_reason
+    assert not FakeEngine.instances
+    assert len(warnings_in(caplog)) == 1
+    # A broken install is not transient: it is remembered, so the next selection does not probe again.
+    assert not _backend._is_transient_failure(choice.fallback_reason)
+
+
 def test_nvidia_with_emeans_rocm_picks_nvidia_auto_rung() -> None:
     probe = FakeProbe()
     choice = choose(gpu_env(is_rocm=False, emeans_rocm=True), probe)

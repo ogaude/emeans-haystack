@@ -159,11 +159,13 @@ def _run_probe(requested: str, precision: str) -> ProbeResult:
     # Both spherical modes are probed: e-means takes mode-dependent code paths, and the verdict is reused for
     # every later fit and assignment on this rung, whatever its mode.
     torch = importlib.import_module("torch")
-    e_means = gpu_engine()
     x = None
     em = None
     centroids = None
     try:
+        # Inside the try: a broken engine install (e.g. a failing `import emeans_rocm`) is a recorded probe
+        # failure, so `device="auto"` falls back to CPU instead of crashing.
+        e_means = gpu_engine()
         label = ""
         for spherical in (True, False):
             generator = torch.Generator(device="cuda")
