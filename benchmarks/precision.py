@@ -7,7 +7,7 @@ Precision study: how far GPU FP16 and BF16 e-means centroids move from FP32, aga
 
 Every cell trains an FP32 reference, an FP32 deterministic rerun, an FP32 run with another seed and start, and FP16
 and BF16 runs from the same shared start. Every centroid set is scored by the shared exact FP32 scorer and compared
-with the reference after one-to-one matching. FP16 and BF16 exist only on the e-means-rocm fork's Triton rung, so the
+with the reference after one-to-one matching. FP16 and BF16 exist only on emeans-rocm's Triton rung, so the
 orchestrator runs in the `bench-gpu-fork` env.
 """
 
@@ -44,7 +44,6 @@ DIM = 768
 SCHEMA = 1
 DEFAULT_TIMEOUT_MIN = 60
 TAIL_CHARS = 500
-FORK_SOURCE = "e-means-rocm"
 # (variant name, requested precision, seed offset): the reference is the first row.
 FITS = (
     ("reference", "fp32", 0),
@@ -389,16 +388,17 @@ def _record_context(record: dict[str, Any]) -> dict[str, Any]:
 
 def _gpu_refusal() -> str | None:
     """Return why this env cannot run the study, or None."""
-    msg = "the precision study needs the bench-gpu-fork env (e-means-rocm fork linked, GPU visible): "
+    msg = "the precision study needs the bench-gpu-fork env (emeans-rocm installed, GPU visible): "
     try:
         import torch  # noqa: PLC0415
         from haystack_integrations.components.preprocessors.emeans._backend import (  # noqa: PLC0415
             detect_emeans_source,
+            emeans_rocm_importable,
         )
     except ImportError as exc:
         return msg + f"import failed ({exc})"
-    if detect_emeans_source() != FORK_SOURCE:
-        return msg + f"e-means source is {detect_emeans_source()}, not {FORK_SOURCE}"
+    if not emeans_rocm_importable():
+        return msg + f"e-means source is {detect_emeans_source()}, needs emeans-rocm"
     if not torch.cuda.is_available():
         return msg + "no GPU visible to torch"
     return None

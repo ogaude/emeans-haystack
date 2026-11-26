@@ -27,19 +27,19 @@ def _gpu_visible() -> bool:
     return bool(torch.cuda.is_available())
 
 
-def _source() -> str:
-    from haystack_integrations.components.preprocessors.emeans._backend import detect_emeans_source  # noqa: PLC0415
+def _emeans_rocm() -> bool:
+    from haystack_integrations.components.preprocessors.emeans._backend import emeans_rocm_importable  # noqa: PLC0415
 
-    return detect_emeans_source()
+    return emeans_rocm_importable()
 
 
 requires_gpu = pytest.mark.skipif(not _gpu_visible(), reason="needs torch with a visible GPU")
-
-
-def _requires_source(source: str) -> pytest.MarkDecorator:
-    return pytest.mark.skipif(
-        not _gpu_visible() or _source() != source, reason=f"needs a visible GPU and the {source} e-means"
-    )
+requires_stock = pytest.mark.skipif(
+    not _gpu_visible() or _emeans_rocm(), reason="needs the bench-gpu env (stock e-means)"
+)
+requires_emeans_rocm = pytest.mark.skipif(
+    not _gpu_visible() or not _emeans_rocm(), reason="needs the bench-gpu-fork env (emeans-rocm installed)"
+)
 
 
 def _data() -> tuple[np.ndarray, np.ndarray]:
@@ -48,7 +48,7 @@ def _data() -> tuple[np.ndarray, np.ndarray]:
 
 
 @pytest.mark.gpu
-@_requires_source("faiss-cpu")
+@requires_stock
 def test_native_fp32_cell() -> None:
     x, init = _data()
     res = METHODS["emeans-gpu-native-fp32"].train(x, init, k=64, spherical=False, seed=0, passes=None)
@@ -61,7 +61,7 @@ def test_native_fp32_cell() -> None:
 
 
 @pytest.mark.gpu
-@_requires_source("e-means-rocm")
+@requires_emeans_rocm
 @pytest.mark.parametrize("precision", ["fp32", "bf16"])
 def test_triton_cells(precision: str) -> None:
     x, init = _data()
@@ -72,7 +72,7 @@ def test_triton_cells(precision: str) -> None:
 
 
 @pytest.mark.gpu
-@_requires_source("faiss-cpu")
+@requires_stock
 def test_wrong_env_fails_loudly() -> None:
     x, init = _data()
     with pytest.raises(RuntimeError, match="gpu-triton"):
@@ -88,18 +88,40 @@ def test_available_reasons() -> None:
         if not HAS_TORCH:
             assert reason is not None
             assert "torch" in reason
-        elif _gpu_visible() and name == "emeans-gpu-triton-fp32" and _source() != "e-means-rocm":
+        elif not _gpu_visible():
             assert reason is not None
-            assert "bench-gpu-fork" in reason
-        elif _gpu_visible() and name == "emeans-gpu-native-fp32" and _source() == "e-means-rocm":
+        elif name.startswith("emeans-gpu-triton-"):
+            if _emeans_rocm():
+                assert reason is None
+            else:
+                assert reason is not None
+                assert "bench-gpu-fork" in reason
+        elif _emeans_rocm():
             assert reason is not None
             assert "bench-gpu env" in reason
+        else:
+            assert reason is None
+
+
+def test_versions_record_emeans_source() -> None:
+    from haystack_integrations.components.preprocessors.emeans._backend import detect_emeans_source  # noqa: PLC0415
+
+    import worker  # noqa: PLC0415
+
+    source = worker._versions()["emeans_source"]
+    assert source == detect_emeans_source()
+    if _emeans_rocm():
+        assert source is not None
+        assert source.startswith("emeans-rocm ")
+    else:
+        assert source is not None
+        assert source.startswith("faiss-cpu ")
 
 
 @pytest.mark.gpu
 @requires_gpu
 def test_worker_gpu_fields(tmp_path: Path) -> None:
-    method = "emeans-gpu-triton-bf16" if _source() == "e-means-rocm" else "emeans-gpu-native-fp32"
+    method = "emeans-gpu-triton-bf16" if _emeans_rocm() else "emeans-gpu-native-fp32"
     cmd = [
         sys.executable, "-I", str(HERE / "worker.py"), "--method", method, "--data", "random", "--n", "20000",
         "--d", "64", "--k", "64", "--seed", "0", "--warm", "yes", "--scratch", str(tmp_path),

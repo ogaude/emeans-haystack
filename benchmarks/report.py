@@ -519,7 +519,7 @@ def render_precision(records: list[dict[str, Any]]) -> list[str]:
         (
             "All fits are deterministic from the same shared start; the reference is FP32. The baselines are an FP32 "
             "deterministic rerun and an FP32 run with another seed and another start. FP16 and BF16 run on the "
-            "e-means-rocm fork's Triton rung. Centroids are matched one to one (Hungarian) before measuring. "
+            "emeans-rocm package's Triton rung. Centroids are matched one to one (Hungarian) before measuring. "
             "`drift_gap` 1.0 means a centroid moved as far as its nearest other reference centroid; the table shows "
             "the median over seeds of the per-run median and the maximum over seeds of the per-run maximum. Labels "
             "and objective come from the shared exact FP32 scorer. Runs that fell back to another precision or "

@@ -165,29 +165,28 @@ def _emeans_gpu(expected_backend: str, precision: str) -> Callable[..., TrainRes
     return train
 
 
-def _gpu_reason(*, want_fork: bool) -> str | None:
+def _gpu_reason(*, want_emeans_rocm: bool) -> str | None:
     """Return why a GPU method cannot run in this env, or `None` when it can."""
-    from haystack_integrations.components.preprocessors.emeans._backend import detect_emeans_source  # noqa: PLC0415
+    from haystack_integrations.components.preprocessors.emeans._backend import emeans_rocm_importable  # noqa: PLC0415
 
-    env_name = "bench-gpu-fork env (e-means-rocm fork linked)" if want_fork else "bench-gpu env (upstream e-means)"
+    env_name = "bench-gpu-fork env (emeans-rocm installed)" if want_emeans_rocm else "bench-gpu env (stock e-means)"
     try:
         torch = importlib.import_module("torch")
     except ImportError:
         return f"torch is not installed; needs the {env_name}"
     if not torch.cuda.is_available():
         return f"torch sees no GPU; needs the {env_name}"
-    is_fork = detect_emeans_source() == "e-means-rocm"
-    if is_fork != want_fork:
+    if emeans_rocm_importable() != want_emeans_rocm:
         return f"needs the {env_name}"
     return None
 
 
 def _native_available() -> str | None:
-    return _gpu_reason(want_fork=False)
+    return _gpu_reason(want_emeans_rocm=False)
 
 
 def _triton_available() -> str | None:
-    return _gpu_reason(want_fork=True)
+    return _gpu_reason(want_emeans_rocm=True)
 
 
 def _always() -> str | None:
