@@ -26,20 +26,21 @@ types = "mypy {args:.}"
 # Accepted risk: with `unsafe-best-match`, any package published on the AMD index with a higher version than on
 # PyPI wins (dependency confusion). Hatch installs extra-dependencies as plain `uv pip` requirements, outside uv's
 # project mode, so an explicit index pin for torch is not relied on here. torch is pinned to an exact +rocm
-# version and the AMD index is a vendor index.
+# version and the AMD index is a vendor index. The `bench-gpu-fork` env below applies the same reasoning to its exact
+# `emeans-rocm` pin.
 [tool.hatch.envs.bench-gpu]
 template = "bench-cpu"
 extra-dependencies = ["torch[device-{env:EMEANS_ROCM_GFX:gfx1200}]==2.14.0+rocm10.1.0"]
 env-vars = { UV_EXTRA_INDEX_URL = "https://stable.repo.amd.com/rocm/whl-next/", UV_INDEX_STRATEGY = "unsafe-best-match", OMP_NUM_THREADS = "{env:BENCH_THREADS:10}" }
 
-# Run `hatch run bench-gpu-fork:link` once after creating or recreating this env (needs EMEANS_ROCM_FORK pointing
-# at the e-means-rocm clone). Run `unlink` before anything that upgrades or reinstalls faiss-cpu, then `link` again.
+# Installs `emeans-rocm` 0.2.5 from PyPI on top of the ROCm torch of the `bench-gpu` env. A child env's
+# `extra-dependencies` replace the template list, so the torch pin is repeated here. The accepted dependency-confusion
+# risk of `bench-gpu` (unsafe-best-match with the AMD extra index) also covers `emeans-rocm`: it is pinned exactly,
+# PyPI is the intended source, the AMD index returned 404 for `emeans-rocm` on 2026-11-23, and the pin is revisited
+# by hand, never auto-bumped.
 [tool.hatch.envs.bench-gpu-fork]
 template = "bench-gpu"
-
-[tool.hatch.envs.bench-gpu-fork.scripts]
-link = "python ../scripts/link_fork.py"
-unlink = "python ../scripts/link_fork.py --restore"
+extra-dependencies = ["torch[device-{env:EMEANS_ROCM_GFX:gfx1200}]==2.14.0+rocm10.1.0", "emeans-rocm==0.2.5"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

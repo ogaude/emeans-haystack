@@ -7,7 +7,7 @@ through `hatch run`, from this `benchmarks/` folder. Nothing here is published o
 
 | Method | What it is | Env |
 |---|---|---|
-| `emeans-gpu-triton-fp32`, `emeans-gpu-triton-bf16` | e-means on GPU through the e-means-rocm fork (Triton kernels, FP32 and BF16) | `bench-gpu-fork` |
+| `emeans-gpu-triton-fp32`, `emeans-gpu-triton-bf16` | e-means on GPU through emeans-rocm 0.2.5 (PyPI) (Triton kernels, FP32 and BF16) | `bench-gpu-fork` |
 | `emeans-gpu-native-fp32` | e-means on GPU through stock upstream e-means (native FP32 rung) | `bench-gpu` |
 | `emeans-cpu` | e-means on CPU (`NumpyEmeans`) | `bench-cpu` |
 | `faiss-lloyd` | `faiss.Kmeans`, Lloyd's k-means baseline | `bench-cpu` |
@@ -44,19 +44,20 @@ Three hatch envs, all local. The two GPU envs are AMD ROCm only and are never bu
 |---|---|
 | `bench-cpu` | CPU methods, data fetch, report, lint, types |
 | `bench-gpu` | stock upstream e-means on GPU (`torch` ROCm build pinned in `pyproject.toml`, installed from the AMD index) |
-| `bench-gpu-fork` | e-means-rocm fork on GPU, and the precision study |
+| `bench-gpu-fork` | emeans-rocm 0.2.5 (PyPI) on GPU, and the precision study |
 
 The first run of each env builds it. After editing the package, run `hatch env prune` so the envs pick it up.
 
+`bench-gpu-fork` installs `emeans-rocm==0.2.5` from PyPI on top of the ROCm torch of `bench-gpu`, and its records
+store `versions.emeans_source` as `"emeans-rocm 0.2.5"` (the stock envs store `"faiss-cpu 1.16.0"`; records from
+before this change say `"e-means-rocm"` / `"faiss-cpu"`).
+
 ```bash
 cd benchmarks
-export EMEANS_ROCM_FORK=/path/to/your/e-means-rocm/clone   # your clone of the fork
 export BENCH_HOST_LABEL="my-host"                          # free-text label stored in the records
 export BENCH_THREADS=10                                    # optional, CPU threads (default 10)
-hatch run bench-gpu-fork:link                              # copy the fork over the env's e-means
 ```
 
-Run `hatch run bench-gpu-fork:unlink` before anything that upgrades or reinstalls `faiss-cpu`, then `link` again.
 Set `EMEANS_ROCM_GFX` if your card is not `gfx1200`.
 
 ## Data
@@ -146,8 +147,8 @@ hour each.
 ## Precision study
 
 FP16 and BF16 against an FP32 reference, plus an FP32 rerun and an FP32 other-seed baseline, at k = 1024 and
-4096, n = 100k and 1M, both modes, random and real data, 3 seeds (48 cells). It needs the fork env and is
-resumable:
+4096, n = 100k and 1M, both modes, random and real data, 3 seeds (48 cells). It needs
+bench-gpu-fork (emeans-rocm installed) and is resumable:
 
 ```bash
 hatch run bench-gpu-fork:run precision.py
