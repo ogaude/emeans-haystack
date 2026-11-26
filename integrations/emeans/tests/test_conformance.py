@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import importlib
 import re
+import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -75,3 +77,78 @@ def test_namespace_layout() -> None:
         assert not (directory / "__init__.py").exists(), f"{directory} must stay a namespace package"
     assert (components / "preprocessors" / "py.typed").is_file()
     assert (components / "rankers" / "py.typed").is_file()
+
+
+ALLOWED_ENV_VARS = {
+    "ROCR_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "CUDA_VISIBLE_DEVICES",
+    "CUBLAS_WORKSPACE_CONFIG",
+}
+ENV_METHODS = {"get", "pop", "setdefault"}
+
+
+def _is_os_environ(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "environ"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+    )
+
+
+def _env_var_literals() -> set[str]:
+    found: set[str] = set()
+    for path in sorted((INTEGRATION_ROOT / "src").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            arg: ast.AST | None = None
+            if isinstance(node, ast.Subscript) and _is_os_environ(node.value):
+                arg = node.slice
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                is_environ_method = _is_os_environ(node.func.value) and node.func.attr in ENV_METHODS
+                is_getenv = (
+                    node.func.attr == "getenv" and isinstance(node.func.value, ast.Name) and node.func.value.id == "os"
+                )
+                if (is_environ_method or is_getenv) and node.args:
+                    arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                found.add(arg.value)
+    return found
+
+
+def _pyproject() -> dict:
+    return tomllib.loads((INTEGRATION_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+
+def test_no_own_env_vars() -> None:
+    found = _env_var_literals()
+    assert found, "the environment scan found nothing, so its patterns are dead"
+    assert found <= ALLOWED_ENV_VARS, f"unexpected environment variables read or set: {sorted(found - ALLOWED_ENV_VARS)}"
+
+
+def test_no_run_async() -> None:
+    from haystack_integrations.components.preprocessors.emeans import EmeansDocumentClusterer, EmeansFitter
+    from haystack_integrations.components.rankers.emeans import EmeansClusterRanker
+
+    for component in (EmeansFitter, EmeansDocumentClusterer, EmeansClusterRanker):
+        assert not hasattr(component, "run_async"), f"{component.__name__} must stay synchronous"
+
+
+def test_no_console_scripts() -> None:
+    project = _pyproject()["project"]
+    assert "scripts" not in project
+    assert "gui-scripts" not in project
+    assert not list((INTEGRATION_ROOT / "src").rglob("__main__.py"))
+
+
+def test_numpy_floor() -> None:
+    assert "numpy>=2.0" in _pyproject()["project"]["dependencies"]
+
+
+def test_license_copyright() -> None:
+    integration_license = (INTEGRATION_ROOT / "LICENSE.txt").read_bytes()
+    root_license = (INTEGRATION_ROOT.parent.parent / "LICENSE").read_bytes()
+    assert integration_license == root_license
+    text = integration_license.decode("utf-8")
+    assert "[yyyy]" not in text
+    assert "[name of copyright owner]" not in text
