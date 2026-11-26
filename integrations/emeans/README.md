@@ -44,6 +44,14 @@ stock faiss-cpu e-means engine is tried on the GPU in native FP32 before falling
 
 Importing the package never imports PyTorch. PyTorch is loaded only when a GPU backend is considered.
 
+## Benchmarks
+
+- e-means needs fewer passes than Lloyd's k-means (`faiss.Kmeans`, scikit-learn `KMeans`) to reach the same objective; its passes are not faster. On 1M Cohere embeddings (768-d) with k = 16384, CPU e-means after 5 passes (objective 0.18569) beats `faiss.Kmeans` after 25 passes (0.18746); a pass costs about the same (114 vs 111 s), so 575 s vs 2765 s.
+- On an AMD RX 9060 XT with `emeans-rocm` 0.2.5, GPU e-means was faster than CPU e-means in every setting measured: from 3.9x at 100k x 1024 (n x k = 1.0e8) to 207.7x at 1M x 65536 (Triton BF16 10.7 s vs 2232 s).
+- Without a GPU, CPU e-means is faster than Lloyd's k-means with an objective within 0.5 % in 11 of 16 settings. Lloyd's k-means has the better objective when there are few rows per centroid: +7.90 % for e-means at 100k x 16384 on random data, +22.22 % at 100k x 65536 on Cohere (a degenerate 1.5 rows per centroid).
+- On real data, FP16/BF16 objectives are between -0.121 % and +0.108 % of FP32, but at about 100k rows they change document assignments almost as much as reseeding does: use FP32 when stable `cluster_id`s matter.
+- Full tables, protocol, every cut made for time or memory and the settings not run: [benchmarks/RESULTS.md](../../benchmarks/RESULTS.md). Random data is for speed only.
+
 ## Contributing
 
 Refer to the general [Contribution Guidelines](https://github.com/deepset-ai/haystack-core-integrations/blob/main/CONTRIBUTING.md).
