@@ -44,23 +44,14 @@ STATIC_CUTS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         (
-            "Load-contaminated cells were rerun: 6 cells (12 records) dropped and rerun on 2026-11-26 on a quiet "
-            "machine, the drop logged with the dropped lines kept"
+            "Load-contaminated cell-seeds were rerun: 6 cell-seeds (cold and warm, 12 records) across 4 cells, "
+            "dropped and rerun on 2026-11-26 on a quiet machine, the drop logged with the dropped lines kept"
         ),
         (
             "concurrent jobs on the machine (agent sessions, an image-model probe, a container that pushed the machine "
             "into swap) had inflated their per-pass times"
         ),
-        "the first, slower timings of those cells; they are kept locally, not published",
-    ),
-    (
-        (
-            "Cells 4-6 % slower than the clean 2026-11-26 reruns were kept, not rerun (owner, 2026-11-26): emeans-cpu "
-            "random 1M x 4096 seeds 0-1 (31.6-31.9 vs 29.8 s/pass), faiss-lloyd cohere 1M x 16384 seed 1 main "
-            "(115.1 vs about 110.6 s/pass)"
-        ),
-        "the gap matches day-to-day variation; a rerun would cost hours",
-        ("per-pass timings vary by 4-6 % between days and machine states; objectives and pass counts are not affected"),
+        "the first, slower timings of those cell-seeds; they are kept locally, not published",
     ),
     (
         "scikit-learn cohere records (54) were dropped and rerun on 2026-11-24 after a scoring fix",
@@ -81,8 +72,8 @@ STATIC_CUTS: tuple[tuple[str, str, str], ...] = (
             "known"
         ),
         (
-            "on random data FP16/BF16 drift equals the FP32 other-seed drift; the guidance adds a caution instead of "
-            "a claim"
+            "on random data FP16/BF16 drift equals or slightly exceeds the FP32 other-seed drift; the guidance adds "
+            "a caution instead of a claim"
         ),
         "nothing; the contradictions are listed in the Precision section",
     ),
@@ -96,6 +87,25 @@ STATIC_CUTS: tuple[tuple[str, str, str], ...] = (
             "true spherical Lloyd baseline"
         ),
         "how true spherical Lloyd would behave in scikit-learn; read spherical comparisons against `faiss-lloyd`",
+    ),
+)
+
+# Cell-seeds kept although slower than a clean rerun of the same work: (kept key, reference key, label).
+KEPT_SLOW: tuple[tuple[str, str, str], ...] = (
+    (
+        "emeans-cpu|random|1000000|4096|euclidean|0|main|default|cold",
+        "emeans-cpu|random|1000000|4096|euclidean|2|main|default|cold",
+        "emeans-cpu random 1M x 4096 seed 0 (vs seed 2)",
+    ),
+    (
+        "emeans-cpu|random|1000000|4096|euclidean|1|main|default|cold",
+        "emeans-cpu|random|1000000|4096|euclidean|2|main|default|cold",
+        "emeans-cpu random 1M x 4096 seed 1 (vs seed 2)",
+    ),
+    (
+        "faiss-lloyd|cohere|1000000|16384|spherical|1|main|default|cold",
+        "faiss-lloyd|cohere|1000000|16384|spherical|1|sweep|25|cold",
+        "faiss-lloyd cohere 1M x 16384 seed 1 main (vs its 25-pass sweep point)",
     ),
 )
 

@@ -44,6 +44,7 @@ DRIFT_DIFF = 0.005
 PER_PASS_SAME = 0.05
 DEGENERATE_ROWS_PER_CENTROID = 2
 SAME_OBJECTIVE = 1e-4
+RATIO_AS_TIMES = 2
 _BIG = 1000
 
 
@@ -545,6 +546,24 @@ _PRECISION_HEADER = [
 ]  # fmt: skip
 
 
+def _spike_values(records: list[dict[str, Any]]) -> str:
+    """Unrounded drift medians of every reduced variant not below its other-seed baseline."""
+    parts = []
+    for group, variants in sorted(aggregate_precision(records).items()):
+        base = variants.get("fp32_other_seed", {}).get("drift_gap_median")
+        if base is None:
+            continue
+        hits = [
+            f"{name} {variants[name]['drift_gap_median']:.3f}"
+            for name in REDUCED
+            if variants.get(name, {}).get("drift_gap_median", -1.0) >= base
+        ]
+        if hits:
+            data, mode, n, k = group
+            parts.append(f"{data} {mode} {_n_label(n)} x {k}: {', '.join(hits)} vs {base:.3f}")
+    return "; ".join(parts)
+
+
 def render_precision(records: list[dict[str, Any]]) -> list[str]:
     """
     Render the Precision section.
@@ -593,8 +612,8 @@ def render_precision(records: list[dict[str, Any]]) -> list[str]:
         out += [
             "",
             (
-                "Each contradiction is a reduced-precision drift equal to, not below, the FP32 other-seed drift "
-                "(see the ratio table above). The owner accepted them as known and chose option B on 2026-11-23: "
+                "Each contradiction is a reduced-precision drift equal to or slightly above the FP32 other-seed drift "
+                f"({_spike_values(records)}). The owner accepted them as known and chose option B on 2026-11-23: "
                 "the caution above, no other change to the precision guidance."
             ),
             "",
@@ -749,13 +768,41 @@ def passes_to_objective(rows: Iterable[Row], emeans: str = EMEANS_CPU) -> list[P
     return out
 
 
-def _render_passes(reaches: list[PassReach]) -> list[str]:
+def _per_pass_summary(reaches: list[PassReach], compares: "list[MainCompare]") -> list[str]:
+    """What one CPU e-means pass costs relative to one Lloyd iteration, measured, as a range."""
+    out = ["Per-pass cost of CPU e-means relative to Lloyd's k-means (same CPU, cold medians):", ""]
+    for r in reaches:
+        mine, theirs = _per_pass(r.emeans_last), _per_pass(r.lloyd)
+        if mine and theirs:
+            rel = f"{(mine / theirs - 1) * 100:+.1f} %" if mine < RATIO_AS_TIMES * theirs else f"{mine / theirs:.1f}x"
+            out.append(
+                f"- sweep, 25-pass points, {_cell_label(r.cell[0], r.cell[2], r.cell[3])} vs `{r.lloyd.method}`: "
+                f"{rel} ({_num(mine)} vs {_num(theirs)} s/pass)"
+            )
+    by_k: dict[tuple[str, int], list[float]] = defaultdict(list)
+    for c in compares:
+        mine = _per_pass(c.emeans)
+        for lloyd in c.cpu_lloyd:
+            theirs = _per_pass(lloyd)
+            if mine and theirs:
+                by_k[(lloyd.method, c.cell[3])].append(mine / theirs)
+    for (method, k), values in sorted(by_k.items()):
+        if max(values) < RATIO_AS_TIMES:
+            low, high = f"{(min(values) - 1) * 100:+.0f} %", f"{(max(values) - 1) * 100:+.0f} %"
+        else:
+            low, high = f"{min(values):.1f}x", f"{max(values):.1f}x"
+        text = low if low == high else f"{low} to {high}"
+        out.append(f"- main cells, k = {k}, vs `{method}`: {text} ({len(values)} cells)")
+    return out
+
+
+def _render_passes(reaches: list[PassReach], compares: "list[MainCompare]") -> list[str]:
     out = [
         "## Passes to the same objective",
         "",
         (
             "The measured advantage of e-means is fewer passes (epochs) to reach the same objective, not faster "
-            "passes: on CPU one e-means pass costs about as much as one Lloyd iteration. Target: the Lloyd's "
+            "passes (per-pass cost below). Target: the Lloyd's "
             "k-means median objective at its largest swept pass count (25 requested; passes actually used shown). "
             "`e-means passes`: the fewest swept CPU e-means passes whose median objective is at or below the target. "
             f"Swept points are {', '.join(f'{p:g}' for p in SWEEP_PASSES)}, nothing is interpolated, so the pass "
@@ -768,6 +815,7 @@ def _render_passes(reaches: list[PassReach]) -> list[str]:
     ]
     if not reaches:
         return [*out, "No sweep records.", ""]
+    out += [*_per_pass_summary(reaches, compares), ""]
     body = []
     for r in reaches:
         data, _mode, n, k = r.cell
@@ -934,7 +982,9 @@ def _speedup_line(s: GpuSpeedup) -> str:
     )
 
 
-def _render_where(summary: list[str], speedups: list[GpuSpeedup], compares: list[MainCompare]) -> list[str]:
+def _render_where(
+    summary: list[str], speedups: list[GpuSpeedup], compares: list[MainCompare], rows: list[Row]
+) -> list[str]:
     out = ["## Where the GPU does not help / where CPU e-means wins", ""]
     out += [*summary, ""] if summary else [f"No cell carries `{GPU_NOT_HELP}` or `{CPU_WINS}`.", ""]
     if speedups:
@@ -944,31 +994,39 @@ def _render_where(summary: list[str], speedups: list[GpuSpeedup], compares: list
             small = min(cells, key=lambda c: c[2] * c[3])
             out.append(
                 f"- The GPU helps in every main cell measured: the best GPU e-means run (end-to-end, transfer "
-                f"included) is faster than CPU e-means in all {len(cells)} cells, cold and warm, including the "
-                f"smallest n x k ({_nxk(small[2], small[3])})."
+                f"included) is faster than CPU e-means ({_coverage(speedups)}), including the smallest n x k "
+                f"({_nxk(small[2], small[3])}). Cells without a CPU warm time have no warm comparison."
             )
         low = min(speedups, key=lambda s: s.speedup)
         high = max(speedups, key=lambda s: s.speedup)
         out.append(f"- Smallest GPU speedup over CPU e-means: {_speedup_line(low)}.")
-        out.append(f"- Largest: {_speedup_line(high)}.")
+        lead = _gpu_lead(rows)
+        out.append(
+            f"- Largest: {_speedup_line(high)}"
+            + (", BF16 on the GPU against FP32 on the CPU" if high.gpu.precision != "fp32" else "")
+            + "."
+        )
+        if lead:
+            out.append(f"- Per GPU method {lead}.")
         out.append(
             "- CPU e-means is never the fastest method here, because a GPU e-means row is in every cell; "
             f"`{CPU_WINS}` therefore never applies on this host."
         )
     wins = [c for c in compares if c.cpu_only_win]
+    comparable = [c for c in compares if c.lloyd is not None]
     if compares:
         labels = ", ".join(_cell_label(c.cell[0], c.cell[2], c.cell[3]) for c in wins) or "none"
         out.append(
-            f"- Without a GPU, `{CPU_ONLY_WINS}` in {len(wins)} of {len(compares)} main cells (faster than every CPU "
-            f"Lloyd run, objective within {OBJECTIVE_TOLERANCE * 100:g} %): {labels}."
+            f"- Without a GPU, `{CPU_ONLY_WINS}` in {len(wins)} of {len(comparable)} comparable main cells "
+            f"({len(compares) - len(comparable)} have no Lloyd run): CPU e-means finishes sooner than every CPU "
+            f"Lloyd run with an objective within {OBJECTIVE_TOLERANCE * 100:g} % of the best one: {labels}."
         )
+        for data in sorted({c.cell[0] for c in comparable}):
+            mine = [c for c in comparable if c.cell[0] == data]
+            out.append(f"  - {data}: {sum(1 for c in mine if c.cpu_only_win)} of {len(mine)} comparable main cells.")
         lost = [c for c in compares if c.gap is not None and c.gap > OBJECTIVE_TOLERANCE]
         if lost:
-            text = "; ".join(
-                f"{_cell_label(c.cell[0], c.cell[2], c.cell[3])} {_pct(c.gap or 0.0)} ({c.cell[2] / c.cell[3]:.1f} "
-                "rows per centroid)"
-                for c in lost
-            )
+            text = "; ".join(_lost_text(c, compares) for c in lost)
             out.append(f"- Lloyd's k-means has the better objective at: {text}.")
         none = [c for c in compares if c.lloyd is None]
         if none:
@@ -978,28 +1036,108 @@ def _render_where(summary: list[str], speedups: list[GpuSpeedup], compares: list
     return out
 
 
+def _coverage(speedups: list[GpuSpeedup]) -> str:
+    """Which cells and timings the GPU wins, e.g. `cold in all 16 cells; warm in all 12 cells ...`."""
+    parts = []
+    for timing, scope in (("cold", "cells"), ("warm", "cells that have a CPU warm time")):
+        sel = [s for s in speedups if s.timing == timing]
+        if not sel:
+            continue
+        won = sum(1 for s in sel if s.speedup > 1)
+        count = f"all {won}" if won == len(sel) else f"{won} of {len(sel)}"
+        parts.append(f"{timing} in {count} {scope}")
+    return ", ".join(parts)
+
+
+def _largest_cell_speedups(rows: list[Row]) -> tuple[SweepCell, Row, list[tuple[Row, float]]] | None:
+    """CPU e-means and every GPU e-means row (cold, end-to-end) at the largest cell, real data first."""
+    main = _main_points(rows)
+    cells = [
+        c for c, by in main.items()
+        if any(r.device == "gpu" for r in by.values()) and any(m == EMEANS_CPU for m, _b, _p in by)
+    ]  # fmt: skip
+    if not cells:
+        return None
+    cell = max(cells, key=lambda c: (c[2] * c[3], c[0] == "cohere"))
+    cpu = next(r for (m, _b, _p), r in main[cell].items() if m == EMEANS_CPU)
+    gpu = [(r, cpu.seconds / r.end_to_end) for r in main[cell].values() if r.device == "gpu" and r.engine == "e-means"]
+    return cell, cpu, sorted(gpu, key=lambda pair: (pair[0].precision != "fp32", -pair[1]))
+
+
+def _gpu_lead(rows: list[Row]) -> str:
+    """FP32-vs-FP32 GPU speedup at the largest cell first, then BF16 vs CPU FP32."""
+    found = _largest_cell_speedups(rows)
+    if found is None:
+        return ""
+    cell, cpu, gpu = found
+    fp32 = [(r, s) for r, s in gpu if r.precision == "fp32"]
+    other = [(r, s) for r, s in gpu if r.precision != "fp32"]
+    label = _cell_label(cell[0], cell[2], cell[3])
+    text = f"at {label} (cold, end-to-end, CPU e-means {_num(cpu.seconds)} s), FP32 against FP32: " + ", ".join(
+        f"`{r.method}` {s:.1f}x ({_num(r.end_to_end)} s)" for r, s in fp32
+    )
+    if other:
+        text += "; " + ", ".join(
+            f"`{r.method}` {s:.1f}x ({_num(r.end_to_end)} s), {r.precision.upper()} on the GPU against FP32 on the CPU"
+            for r, s in other
+        )
+    return text
+
+
+def _lost_text(c: MainCompare, compares: list[MainCompare]) -> str:
+    """One cell where Lloyd's objective is better: degenerate cells say so, others are reported as found."""
+    data, _mode, n, k = c.cell
+    text = f"{_cell_label(data, n, k)} ({_pct(c.gap or 0.0)}"
+    if n / k < DEGENERATE_ROWS_PER_CENTROID:
+        return text + f", degenerate: {n / k:.1f} rows per centroid)"
+    twins = [o for o in compares if (o.cell[2], o.cell[3]) == (n, k) and o.cell[0] != data and o.gap is not None]
+    twin = "".join(f"; {o.cell[0]} at the same size: {_pct(o.gap or 0.0)}" for o in twins)
+    return text + f", reported as found{twin})"
+
+
 def _render_headline(
-    reaches: list[PassReach], compares: list[MainCompare], speedups: list[GpuSpeedup], host: str
+    reaches: list[PassReach], compares: list[MainCompare], speedups: list[GpuSpeedup], host: str, rows: list[Row]
 ) -> list[str]:
     out = ["## Headline", ""]
     reached = [r for r in reaches if r.emeans is not None and r.lloyd.passes_used]
+    lost = [c for c in compares if c.gap is not None and c.gap > OBJECTIVE_TOLERANCE]
     if reached and len(reached) == len(reaches):
         fewer = all((r.emeans.passes_used or 0) < (r.lloyd.passes_used or 0) for r in reached if r.emeans)
+        ks = " and ".join(str(k) for k in sorted({r.cell[3] for r in reaches}))
         if fewer:
             out.append(
                 "- e-means needs fewer passes (epochs) than Lloyd's k-means (`faiss.Kmeans`, scikit-learn `KMeans`) "
-                f"to reach the same objective, in all {len(reached)} sweep comparisons. It is not faster per pass on "
-                "CPU; the wall-time gain comes from the fewer passes."
+                f"to reach the same objective in all {len(reached)} sweep comparisons (k = {ks}). It is not faster "
+                "per pass on CPU; the wall-time gain comes from the fewer passes."
+                + (" Exceptions at 5 passes in the main cells: see the line below." if lost else "")
             )
+    by_cell = {c.cell: c for c in compares}
     faiss = [r for r in reaches if r.lloyd.method == "faiss-lloyd" and r.emeans is not None]
     for r in faiss:
         data, _mode, n, k = r.cell
         assert r.emeans is not None  # noqa: S101
+        quoted, lloyd_pp = _per_pass(r.emeans), _per_pass(r.lloyd)
+        rel = quoted / lloyd_pp - 1 if quoted and lloyd_pp else None
+        main = by_cell.get(r.cell)
+        lloyd_main = next((x for x in main.cpu_lloyd if x.method == "faiss-lloyd"), None) if main else None
+        main_text = (
+            f" (pass-sweep medians; the main-cell runs give {_num(main.emeans.seconds)} s vs "
+            f"{_num(lloyd_main.seconds)} s)"
+            if main and lloyd_main and main.emeans.passes_used == r.emeans.passes_used
+            else " (pass-sweep medians)"
+        )
         out.append(
             f"- {_cell_label(data, n, k)}: CPU e-means reaches the objective `faiss.Kmeans` has after "
             f"{_passes(r.lloyd.passes_used)} ({_obj(r.lloyd)}) within {_passes(r.emeans.passes_used)} "
-            f"({_obj(r.emeans)}), pass ratio {r.pass_ratio}; {_per_pass_cost(r.emeans_last, r.lloyd)}, so "
-            f"{_num(r.emeans.seconds)} s vs {_num(r.lloyd.seconds)} s on the same CPU."
+            f"({_obj(r.emeans)}), pass ratio {r.pass_ratio}; at the 25-pass points "
+            f"{_per_pass_cost(r.emeans_last, r.lloyd)}"
+            + (
+                f", at the {_passes(r.emeans.passes_used)} quoted e-means takes {_num(quoted)} s/pass "
+                f"({rel * 100:+.0f} % vs `faiss.Kmeans`)"
+                if rel is not None
+                else ""
+            )
+            + f"; {_num(r.emeans.seconds)} s vs {_num(r.lloyd.seconds)} s on the same CPU{main_text}."
         )
     sk = [r for r in reaches if r.lloyd.method == "sklearn-lloyd"]
     if sk:
@@ -1010,7 +1148,7 @@ def _render_headline(
         )
         out.append(
             f"- Per pass, CPU e-means is not faster than Lloyd: scikit-learn `KMeans` is cheaper per pass at 100k "
-            f"({text}), so the wall-time gain there is smaller than the pass gain."
+            f"({text}, 25-pass points), so the wall-time gain there is smaller than the pass gain."
         )
     for r in reaches:
         data, _mode, n, k = r.cell
@@ -1037,31 +1175,21 @@ def _render_headline(
                 f"- {_cell_label(data, n, k)}: after 5 passes the CPU e-means objective is flat and not monotone "
                 f"({passes} passes: {values}); reported as found."
             )
-    lost = [c for c in compares if c.gap is not None and c.gap > OBJECTIVE_TOLERANCE]
     beat = [c for c in compares if c.gap is not None and c.gap <= 0]
     total = [c for c in compares if c.gap is not None]
     if total:
-        text = ", ".join(
-            f"{_cell_label(c.cell[0], c.cell[2], c.cell[3])} ({_pct(c.gap or 0.0)}, {c.cell[2] / c.cell[3]:.1f} "
-            "rows per centroid)"
-            for c in lost
-        )
         out.append(
             f"- At its default 5 passes CPU e-means has a lower objective than the best Lloyd's k-means run in "
-            f"{len(beat)} of {len(total)} main cells"
-            + (f"; Lloyd is better at {text}." if lost else ".")
-            + (
-                " At 1.5 rows per centroid (100k x 65536) the problem is degenerate; that cell is an edge case."
-                if any(c.cell[2] / c.cell[3] < DEGENERATE_ROWS_PER_CENTROID for c in lost)
-                else ""
-            )
+            f"{len(beat)} of {len(total)} comparable main cells"
+            + (f"; Lloyd is better at {', '.join(_lost_text(c, compares) for c in lost)}." if lost else ".")
         )
     if speedups:
-        big = max(speedups, key=lambda s: (s.cell[2] * s.cell[3], s.cell[0] == "cohere", s.timing == "cold"))
         low = min(speedups, key=lambda s: s.speedup)
+        lead = _gpu_lead(rows)
         out.append(
-            f"- GPU ({host}): the best GPU e-means run is faster than CPU e-means in every main cell; "
-            f"{_speedup_line(big)}; smallest gain {_speedup_line(low)}."
+            f"- GPU ({host}): the best GPU e-means run is faster than CPU e-means ({_coverage(speedups)})"
+            + (f"; {lead}" if lead else "")
+            + f"; smallest gain {_speedup_line(low)}."
         )
     out.append("")
     return out
@@ -1187,29 +1315,30 @@ def _render_cuts(records: list[dict[str, Any]], rows: list[Row], reaches: list[P
         ),
         (
             (
-                f"{DEFAULT_CAP_MIN}-minute cap per cell and seed (`DEFAULT_CAP_MIN`); a cell whose one-pass probe "
+                f"{DEFAULT_CAP_MIN}-minute cap per cell-seed (`DEFAULT_CAP_MIN`); a cell-seed whose one-pass probe "
                 "estimate exceeds it is not run"
             ),
-            "one Lloyd cell at 1M x 65536 would take about 3 h per seed",
+            "one Lloyd cell-seed at 1M x 65536 would take about 3 h",
             ("not run: " + "; ".join(hidden) + ". No Lloyd objective there, so no e-means vs Lloyd comparison")
             if hidden
             else "nothing: no cell was capped",
         ),
         (
-            f"Warm repeat skipped for CPU cells estimated over {WARM_MAX_S} s (`WARM_MAX_S`)",
-            "a warm repeat would double the cost of the largest CPU cells",
+            f"Warm repeat skipped for CPU cell-seeds estimated over {WARM_MAX_S} s (`WARM_MAX_S`)",
+            "a warm repeat would double the cost of the largest CPU cell-seeds",
             (
-                f"warm timings of {len(warm_skipped)} cell-seeds ({', '.join(cpu_warm_methods)}); their cold times are "
-                "shown"
+                f"{len(warm_skipped)} warm records ({sum(1 for r in warm_skipped if r.get('kind') == 'main')} main "
+                f"cell-seeds, {sum(1 for r in warm_skipped if r.get('kind') == 'sweep')} sweep points; "
+                f"{', '.join(cpu_warm_methods)}); their cold times are shown"
             ),
         ),
         (
             (
-                f"Pass sweep ({', '.join(f'{p:g}' for p in SWEEP_PASSES)} passes) on {len(SWEEP_CELLS)} cells only "
+                f"Pass sweep ({', '.join(f'{p:g}' for p in SWEEP_PASSES)} passes) on {len(SWEEP_CELLS)} settings only "
                 f"(`SWEEP_CELLS`): {sweep_cells}"
             ),
             "each sweep point is a full run per method and seed",
-            "passes-to-objective at other sizes and k; the main cells run fixed passes",
+            "passes-to-objective at other settings; the main cells run fixed passes",
         ),
         (
             f"`faiss.Kmeans` capped at `niter` {FAISS_NITER}; e-means at its default 5 passes",
@@ -1223,18 +1352,46 @@ def _render_cuts(records: list[dict[str, Any]], rows: list[Row], reaches: list[P
         ),
         (
             f"Precision study at k = {', '.join(str(k) for k in PRECISION_KS)} only",
-            "cost (6 fits per cell and seed)",
+            "cost (6 fits per precision cell-seed)",
             "precision effects at larger k",
         ),
     ]
     out = [
         "## Cuts and choices",
         "",
-        "Every cut made to save time or memory, with its reason and what it hides.",
+        (
+            "Every cut made to save time or memory, with its reason and what it hides. A setting is one "
+            "(data, n, k); a cell is a setting run by one method; a cell-seed is one seed of a cell, with a cold "
+            "and a warm record; a sweep point is one pass count of a sweep cell-seed."
+        ),
         "",
     ]
     return out + _table(
-        ["cut or choice", "reason", "what it hides"], [list(row) for row in computed + list(notes.STATIC_CUTS)]
+        ["cut or choice", "reason", "what it hides"],
+        [list(row) for row in [*computed, _kept_slow_row(records), *notes.STATIC_CUTS]],
+    )
+
+
+def _kept_slow_row(records: list[dict[str, Any]]) -> tuple[str, str, str]:
+    """The kept slower cell-seeds, each against its clean 2026-11-26 rerun, in s/pass from the records."""
+    by_key = {r.get("key"): r for r in records if r.get("status") == "ok"}
+    found = []
+    for kept, reference, label in notes.KEPT_SLOW:
+        a, b = by_key.get(kept), by_key.get(reference)
+        if not a or not b or not a.get("passes_used") or not b.get("passes_used"):
+            continue
+        mine, theirs = a["seconds"] / a["passes_used"], b["seconds"] / b["passes_used"]
+        found.append((label, mine, theirs, mine / theirs - 1))
+    if not found:
+        return ("Slower cell-seeds kept", "-", "not in these records")
+    span = f"{min(f[3] for f in found) * 100:.0f}-{max(f[3] for f in found) * 100:.0f} %"
+    items = "; ".join(
+        f"{label} {mine:.1f} vs {theirs:.1f} s/pass ({rel * 100:+.1f} %)" for label, mine, theirs, rel in found
+    )
+    return (
+        f"Cell-seeds {span} slower than the clean 2026-11-26 reruns were kept, not rerun (owner, 2026-11-26): {items}",
+        "the gap matches day-to-day variation; a rerun would cost hours",
+        f"per-pass timings vary by {span} between days and machine states; objectives and pass counts are not affected",
     )
 
 
@@ -1427,14 +1584,14 @@ def render(
     speedups = gpu_speedups(rows)
     host = next(((r.get("host") or {}).get("gpu") for r in records if (r.get("host") or {}).get("gpu")), None)
     lines = _header(records, title, smoke)
-    lines += _render_headline(reaches, compares, speedups, host or "GPU")
+    lines += _render_headline(reaches, compares, speedups, host or "GPU", rows)
     lines += _protocol()
-    lines += _render_passes(reaches)
+    lines += _render_passes(reaches, compares)
     lines += _render_main_comparison(compares)
     lines += _render_claims(reaches, compares, speedups)
     lines += ["## Main results", "", "Cold and warm are `median [min-max]` seconds over seeds.", ""]
     lines += table
-    lines += _render_where(summary, speedups, compares)
+    lines += _render_where(summary, speedups, compares, rows)
     lines += _render_gpu_engines(rows)
     if fork_speed is not None and fork_precision is not None:
         lines += fork_comparison(records, fork_speed, precision_records or [], fork_precision)

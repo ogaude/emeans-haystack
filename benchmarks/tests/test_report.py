@@ -332,7 +332,9 @@ def test_where_section_explains_missing_marks() -> None:
     where = render(_full()).split("## Where the GPU does not help")[1].split("## GPU engines")[0]
     assert "No cell carries `GPU does not help` or `CPU e-means wins`." in where
     assert "The GPU helps in every main cell measured" in where
-    assert "`CPU e-means wins (CPU only)` in 1 of 1 main cells" in where
+    assert "`CPU e-means wins (CPU only)` in 1 of 1 comparable main cells (0 have no Lloyd run)" in where
+    assert "finishes sooner than every CPU Lloyd run" in where
+    assert "(cold in all 1 cells)" in where
 
 
 def test_cuts_table_names_constants_and_capped_cells() -> None:
@@ -342,7 +344,9 @@ def test_cuts_table_names_constants_and_capped_cells() -> None:
     assert "`METHOD_NS`" in cuts
     assert "`SWEEP_CELLS`" in cuts
     assert "`faiss-lloyd` random 1M x 65536 (est. 3.1 h)" in cuts
-    assert "4-6 %" in cuts
+    assert "Slower cell-seeds kept" in cuts  # the kept cell-seeds are not in these records
+    assert "60 warm records" not in cuts
+    assert "A setting is one (data, n, k)" in cuts
     assert "option B" in cuts
     assert cuts.count("\n| ") >= len(report.notes.STATIC_CUTS) + 7
 
@@ -364,3 +368,83 @@ def test_fork_comparison() -> None:
     assert "+0.500 s" in text
     assert "0 of 4 variant drift_gap medians differ" in text
     assert "drift is 0 in 1 of 1 cells" in text
+
+
+def test_kept_slow_row_from_records() -> None:
+    (kept_a, ref_a, _), (kept_b, _ref_b, _), (kept_c, ref_c, _) = report.notes.KEPT_SLOW
+    records = [
+        rec("emeans-cpu", 0, 106.8, 1.0, key=kept_a, passes_used=1.0),
+        rec("emeans-cpu", 1, 105.8, 1.0, key=kept_b, passes_used=1.0),
+        rec("emeans-cpu", 2, 100.0, 1.0, key=ref_a, passes_used=1.0),
+        rec("faiss-lloyd", 1, 104.1, 1.0, key=kept_c, passes_used=1.0),
+        rec("faiss-lloyd", 1, 2500.0, 1.0, key=ref_c, passes_used=25.0),
+    ]
+    cut, _reason, hides = report._kept_slow_row(records)
+    assert cut.startswith("Cell-seeds 4-7 % slower")
+    assert "(+6.8 %)" in cut and "(+5.8 %)" in cut and "(+4.1 %)" in cut
+    assert "vary by 4-7 %" in hides
+
+
+def test_warm_skip_counts_main_and_sweep() -> None:
+    records = [
+        *_full(),
+        rec("emeans-cpu", 0, None, None, status="skipped", skipped_reason="skipped (cost)", key="w1|warm"),
+        rec("emeans-cpu", 0, None, None, status="skipped", skipped_reason="skipped (cost)", kind="sweep",
+            passes_requested=5.0, key="w2|warm"),
+    ]  # fmt: skip
+    cuts = render(records).split("## Cuts and choices")[1]
+    assert "2 warm records (1 main cell-seeds, 1 sweep points; emeans-cpu)" in cuts
+
+
+def test_coverage_and_gpu_lead() -> None:
+    rows = aggregate(
+        [
+            _main("emeans-cpu", 100.0, 1.0),
+            _main("gpu-a", 4.0, 1.0, precision="fp32"),
+            _main("gpu-a", 1.0, 1.0, precision="bf16", backend="t", key="bf|cold"),
+            rec("emeans-cpu", 0, 100.0, 1.0),
+            rec("gpu-a", 0, 200.0, 1.0),
+        ]
+    )
+    assert (
+        report._coverage(report.gpu_speedups(rows))
+        == "cold in all 1 cells, warm in 0 of 1 cells that have a CPU warm time"
+    )
+    lead = report._gpu_lead(rows)
+    assert lead.index("25.0x") < lead.index("100.0x")
+    assert "BF16 on the GPU against FP32 on the CPU" in lead
+
+
+def test_lost_text_degenerate_and_found() -> None:
+    def cmp(data: str, n: int, k: int, gap: float) -> report.MainCompare:
+        rows = aggregate(
+            [
+                _main("emeans-cpu", 1.0, 1.0 + gap, data=data, n=n, k=k),
+                _main("faiss-lloyd", 2.0, 1.0, data=data, n=n, k=k),
+            ]
+        )
+        return report.main_comparison(rows)[0]
+
+    degenerate = cmp("cohere", 100_000, 65536, 0.2)
+    found = cmp("random", 100_000, 16384, 0.079)
+    twin = cmp("cohere", 100_000, 16384, -0.0069)
+    assert "degenerate: 1.5 rows per centroid" in report._lost_text(degenerate, [degenerate])
+    text = report._lost_text(found, [found, twin])
+    assert "reported as found; cohere at the same size: -0.69 %" in text
+    assert "rows per centroid" not in text
+
+
+def test_spike_values_unrounded() -> None:
+    records = [prec(s, reduced_gap=1.205, other_gap=1.19) for s in range(3)]
+    assert report._spike_values(records) == "random euclidean 100k x 1024: fp16 1.205, bf16 1.205 vs 1.190"
+    assert "equal to or slightly above" in "\n".join(report.render_precision(records))
+
+
+def test_per_pass_summary_ranges() -> None:
+    rows = aggregate(_sweep("emeans-cpu", EMEANS_SWEEP) + _sweep("faiss-lloyd", LLOYD_SWEEP))
+    lines = report._per_pass_summary(report.passes_to_objective(rows), [])
+    assert any("25-pass points" in line and "+0.0 %" in line for line in lines)
+
+
+def test_fork_comparison_off_by_default() -> None:
+    assert "fork build" not in render(_full(), precision_records=[prec(0)])

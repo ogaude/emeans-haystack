@@ -1,6 +1,6 @@
 # Benchmark results
 
-Generated 2026-11-26T16:24:48+00:00.
+Generated 2026-11-26T16:42:57+00:00.
 - host: rx9060xt
 - CPU: Intel(R) Core(TM) Ultra 5 225
 - cores: 10
@@ -17,15 +17,15 @@ Generated 2026-11-26T16:24:48+00:00.
 
 ## Headline
 
-- e-means needs fewer passes (epochs) than Lloyd's k-means (`faiss.Kmeans`, scikit-learn `KMeans`) to reach the same objective, in all 5 sweep comparisons. It is not faster per pass on CPU; the wall-time gain comes from the fewer passes.
-- cohere 100k x 4096: CPU e-means reaches the objective `faiss.Kmeans` has after 25 passes (0.21433) within 5 passes (0.20978), pass ratio 5.0-12.5x; an e-means pass costs +16 % (3.42 vs 2.95 s/pass), so 18.5 s vs 73.7 s on the same CPU.
-- cohere 1M x 16384: CPU e-means reaches the objective `faiss.Kmeans` has after 25 passes (0.18746) within 5 passes (0.18569), pass ratio 5.0-12.5x; a pass costs about the same (114 vs 111 s/pass), so 575 s vs 2765 s on the same CPU.
-- random 100k x 4096: CPU e-means reaches the objective `faiss.Kmeans` has after 25 passes (719.94) within 2 passes (716.73), pass ratio 12.5-25.0x; an e-means pass costs +13 % (3.08 vs 2.73 s/pass), so 6.36 s vs 68.1 s on the same CPU.
-- Per pass, CPU e-means is not faster than Lloyd: scikit-learn `KMeans` is cheaper per pass at 100k (cohere 100k x 4096: 3.42 vs 1.07 s/pass; random 100k x 4096: 3.08 vs 1.03 s/pass), so the wall-time gain there is smaller than the pass gain.
+- e-means needs fewer passes (epochs) than Lloyd's k-means (`faiss.Kmeans`, scikit-learn `KMeans`) to reach the same objective in all 5 sweep comparisons (k = 4096 and 16384). It is not faster per pass on CPU; the wall-time gain comes from the fewer passes. Exceptions at 5 passes in the main cells: see the line below.
+- cohere 100k x 4096: CPU e-means reaches the objective `faiss.Kmeans` has after 25 passes (0.21433) within 5 passes (0.20978), pass ratio 5.0-12.5x; at the 25-pass points an e-means pass costs +16 % (3.42 vs 2.95 s/pass), at the 5 passes quoted e-means takes 3.71 s/pass (+26 % vs `faiss.Kmeans`); 18.5 s vs 73.7 s on the same CPU (pass-sweep medians; the main-cell runs give 17.1 s vs 73.2 s).
+- cohere 1M x 16384: CPU e-means reaches the objective `faiss.Kmeans` has after 25 passes (0.18746) within 5 passes (0.18569), pass ratio 5.0-12.5x; at the 25-pass points a pass costs about the same (114 vs 111 s/pass), at the 5 passes quoted e-means takes 115 s/pass (+4 % vs `faiss.Kmeans`); 575 s vs 2765 s on the same CPU (pass-sweep medians; the main-cell runs give 578 s vs 2797 s).
+- random 100k x 4096: CPU e-means reaches the objective `faiss.Kmeans` has after 25 passes (719.94) within 2 passes (716.73), pass ratio 12.5-25.0x; at the 25-pass points an e-means pass costs +13 % (3.08 vs 2.73 s/pass), at the 2 passes quoted e-means takes 3.18 s/pass (+17 % vs `faiss.Kmeans`); 6.36 s vs 68.1 s on the same CPU (pass-sweep medians).
+- Per pass, CPU e-means is not faster than Lloyd: scikit-learn `KMeans` is cheaper per pass at 100k (cohere 100k x 4096: 3.42 vs 1.07 s/pass; random 100k x 4096: 3.08 vs 1.03 s/pass, 25-pass points), so the wall-time gain there is smaller than the pass gain.
 - At cohere 1M x 16384, `faiss.Kmeans` used all 25 passes and was still improving (10 -> 25 passes: 0.18856 -> 0.18746), so 1M comparisons are against Lloyd at 25 passes, not at convergence.
 - random 100k x 4096: after 5 passes the CPU e-means objective is flat and not monotone (5/10/25 passes: 713.15 / 713.67 / 713.45); reported as found.
-- At its default 5 passes CPU e-means has a lower objective than the best Lloyd's k-means run in 11 of 14 main cells; Lloyd is better at cohere 100k x 65536 (+22.22 %, 1.5 rows per centroid), random 100k x 16384 (+7.90 %, 6.1 rows per centroid), random 100k x 65536 (+36.81 %, 1.5 rows per centroid). At 1.5 rows per centroid (100k x 65536) the problem is degenerate; that cell is an edge case.
-- GPU (AMD Radeon RX 9060 XT): the best GPU e-means run is faster than CPU e-means in every main cell; 207.7x at cohere 1M x 65536 (cold: `emeans-gpu-triton-bf16` 10.7 s end-to-end vs 2232 s); smallest gain 3.9x at random 100k x 1024 (cold: `emeans-gpu-triton-bf16` 1.35 s end-to-end vs 5.21 s).
+- At its default 5 passes CPU e-means has a lower objective than the best Lloyd's k-means run in 11 of 14 comparable main cells; Lloyd is better at cohere 100k x 65536 (+22.22 %, degenerate: 1.5 rows per centroid), random 100k x 16384 (+7.90 %, reported as found; cohere at the same size: -0.69 %), random 100k x 65536 (+36.81 %, degenerate: 1.5 rows per centroid).
+- GPU (AMD Radeon RX 9060 XT): the best GPU e-means run is faster than CPU e-means (cold in all 16 cells, warm in all 12 cells that have a CPU warm time); at cohere 1M x 65536 (cold, end-to-end, CPU e-means 2232 s), FP32 against FP32: `emeans-gpu-native-fp32` 31.1x (71.9 s), `emeans-gpu-triton-fp32` 27.6x (80.8 s); `emeans-gpu-triton-bf16` 207.7x (10.7 s), BF16 on the GPU against FP32 on the CPU; smallest gain 3.9x at random 100k x 1024 (cold: `emeans-gpu-triton-bf16` 1.35 s end-to-end vs 5.21 s).
 
 ## Protocol
 
@@ -43,7 +43,23 @@ Generated 2026-11-26T16:24:48+00:00.
 
 ## Passes to the same objective
 
-The measured advantage of e-means is fewer passes (epochs) to reach the same objective, not faster passes: on CPU one e-means pass costs about as much as one Lloyd iteration. Target: the Lloyd's k-means median objective at its largest swept pass count (25 requested; passes actually used shown). `e-means passes`: the fewest swept CPU e-means passes whose median objective is at or below the target. Swept points are 1, 2, 5, 10, 25, nothing is interpolated, so the pass ratio is a range: e-means got there after the previous point and by this one. `one step earlier` is the previous point's distance to the target. `Lloyd to match e-means at 5`: the fewest swept Lloyd passes reaching CPU e-means' objective at its default 5 passes. Seconds are cold medians on the same CPU; s/pass is taken from each method's 25-pass point.
+The measured advantage of e-means is fewer passes (epochs) to reach the same objective, not faster passes (per-pass cost below). Target: the Lloyd's k-means median objective at its largest swept pass count (25 requested; passes actually used shown). `e-means passes`: the fewest swept CPU e-means passes whose median objective is at or below the target. Swept points are 1, 2, 5, 10, 25, nothing is interpolated, so the pass ratio is a range: e-means got there after the previous point and by this one. `one step earlier` is the previous point's distance to the target. `Lloyd to match e-means at 5`: the fewest swept Lloyd passes reaching CPU e-means' objective at its default 5 passes. Seconds are cold medians on the same CPU; s/pass is taken from each method's 25-pass point.
+
+Per-pass cost of CPU e-means relative to Lloyd's k-means (same CPU, cold medians):
+
+- sweep, 25-pass points, cohere 100k x 4096 vs `faiss-lloyd`: +15.9 % (3.42 vs 2.95 s/pass)
+- sweep, 25-pass points, cohere 100k x 4096 vs `sklearn-lloyd`: 3.2x (3.42 vs 1.07 s/pass)
+- sweep, 25-pass points, cohere 1M x 16384 vs `faiss-lloyd`: +3.5 % (114 vs 111 s/pass)
+- sweep, 25-pass points, random 100k x 4096 vs `faiss-lloyd`: +12.9 % (3.08 vs 2.73 s/pass)
+- sweep, 25-pass points, random 100k x 4096 vs `sklearn-lloyd`: 3.0x (3.08 vs 1.03 s/pass)
+- main cells, k = 1024, vs `faiss-lloyd`: +47 % to +56 % (4 cells)
+- main cells, k = 4096, vs `faiss-lloyd`: +13 % to +17 % (4 cells)
+- main cells, k = 16384, vs `faiss-lloyd`: +3 % to +7 % (4 cells)
+- main cells, k = 65536, vs `faiss-lloyd`: -4 % to +3 % (2 cells)
+- main cells, k = 1024, vs `sklearn-lloyd`: 4.1x to 4.6x (2 cells)
+- main cells, k = 4096, vs `sklearn-lloyd`: 3.3x (2 cells)
+- main cells, k = 16384, vs `sklearn-lloyd`: 3.0x to 3.1x (2 cells)
+- main cells, k = 65536, vs `sklearn-lloyd`: 2.6x to 3.0x (2 cells)
 
 | data | n | k | Lloyd method | Lloyd passes used | Lloyd objective | Lloyd s/pass | Lloyd s | e-means passes | e-means objective | e-means s/pass | e-means s | pass ratio | time ratio | one step earlier | Lloyd to match e-means at 5 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -204,12 +220,15 @@ Cold and warm are `median [min-max]` seconds over seeds.
 
 No cell carries `GPU does not help` or `CPU e-means wins`.
 
-- The GPU helps in every main cell measured: the best GPU e-means run (end-to-end, transfer included) is faster than CPU e-means in all 16 cells, cold and warm, including the smallest n x k (1.0e8).
+- The GPU helps in every main cell measured: the best GPU e-means run (end-to-end, transfer included) is faster than CPU e-means (cold in all 16 cells, warm in all 12 cells that have a CPU warm time), including the smallest n x k (1.0e8). Cells without a CPU warm time have no warm comparison.
 - Smallest GPU speedup over CPU e-means: 3.9x at random 100k x 1024 (cold: `emeans-gpu-triton-bf16` 1.35 s end-to-end vs 5.21 s).
-- Largest: 207.7x at cohere 1M x 65536 (cold: `emeans-gpu-triton-bf16` 10.7 s end-to-end vs 2232 s).
+- Largest: 207.7x at cohere 1M x 65536 (cold: `emeans-gpu-triton-bf16` 10.7 s end-to-end vs 2232 s), BF16 on the GPU against FP32 on the CPU.
+- Per GPU method at cohere 1M x 65536 (cold, end-to-end, CPU e-means 2232 s), FP32 against FP32: `emeans-gpu-native-fp32` 31.1x (71.9 s), `emeans-gpu-triton-fp32` 27.6x (80.8 s); `emeans-gpu-triton-bf16` 207.7x (10.7 s), BF16 on the GPU against FP32 on the CPU.
 - CPU e-means is never the fastest method here, because a GPU e-means row is in every cell; `CPU e-means wins` therefore never applies on this host.
-- Without a GPU, `CPU e-means wins (CPU only)` in 11 of 16 main cells (faster than every CPU Lloyd run, objective within 0.5 %): cohere 100k x 1024, cohere 100k x 4096, cohere 100k x 16384, cohere 1M x 1024, cohere 1M x 4096, cohere 1M x 16384, random 100k x 1024, random 100k x 4096, random 1M x 1024, random 1M x 4096, random 1M x 16384.
-- Lloyd's k-means has the better objective at: cohere 100k x 65536 +22.22 % (1.5 rows per centroid); random 100k x 16384 +7.90 % (6.1 rows per centroid); random 100k x 65536 +36.81 % (1.5 rows per centroid).
+- Without a GPU, `CPU e-means wins (CPU only)` in 11 of 14 comparable main cells (2 have no Lloyd run): CPU e-means finishes sooner than every CPU Lloyd run with an objective within 0.5 % of the best one: cohere 100k x 1024, cohere 100k x 4096, cohere 100k x 16384, cohere 1M x 1024, cohere 1M x 4096, cohere 1M x 16384, random 100k x 1024, random 100k x 4096, random 1M x 1024, random 1M x 4096, random 1M x 16384.
+  - cohere: 6 of 7 comparable main cells.
+  - random: 5 of 7 comparable main cells.
+- Lloyd's k-means has the better objective at: cohere 100k x 65536 (+22.22 %, degenerate: 1.5 rows per centroid); random 100k x 16384 (+7.90 %, reported as found; cohere at the same size: -0.69 %); random 100k x 65536 (+36.81 %, degenerate: 1.5 rows per centroid).
 - No Lloyd run, so no comparison: cohere 1M x 65536, random 1M x 65536 (see Not run).
 
 ## GPU engines
@@ -226,16 +245,6 @@ Largest cell, cohere (spherical) 1M x 65536, cold medians over seeds:
 | emeans-gpu-triton-fp32 | gpu-triton | fp32 | 5 | 80.6 | 80.8 | 0.15387 [0.15384-0.15388] |
 
 Native FP32 is faster than Triton FP32 (warm, end-to-end) in 15 of 16 main cells: cohere 100k x 1024, cohere 100k x 4096, cohere 100k x 16384, cohere 100k x 65536, cohere 1M x 1024, cohere 1M x 4096, cohere 1M x 16384, cohere 1M x 65536, random 100k x 1024, random 100k x 4096, random 100k x 16384, random 100k x 65536, random 1M x 4096, random 1M x 16384, random 1M x 65536.
-
-### emeans-rocm 0.2.5 vs the earlier fork build
-
-Before 0.2.5 was published, the Triton cells and the precision study ran on an earlier build of the author's e-means-rocm fork (commit not recorded). Those records were dropped from `results/` on 2026-11-26 and replaced by the 0.2.5 rerun; they are kept locally and are not published. This comparison is computed from them only when `report.py` is given `--fork-speed` and `--fork-precision`.
-
-- Speed: 372 matching records. Warm time ratio 0.2.5 / fork, median 1.00 [0.87-1.02]; cold time 0.2.5 - fork, median +0.022 s.
-- bf16 main-cell objectives: largest difference 0.000 %, 48 of 48 records within 0.01 %.
-- fp32 main-cell objectives: largest difference 0.082 %, 26 of 48 records within 0.01 %.
-- fp32 main cells: the 0.2.5 median objective lies inside the fork build's min-max over seeds in 13 of 16 cells.
-- Precision: 0 of 192 variant drift_gap medians differ by more than 0.005 between the builds; the 0.2.5 FP32 rerun drift is 0 in 48 of 48 cells.
 
 ## Pass sweep
 
@@ -341,25 +350,25 @@ Before 0.2.5 was published, the Triton cells and the precision study ran on an e
 
 ## Cuts and choices
 
-Every cut made to save time or memory, with its reason and what it hides.
+Every cut made to save time or memory, with its reason and what it hides. A setting is one (data, n, k); a cell is a setting run by one method; a cell-seed is one seed of a cell, with a cold and a warm record; a sweep point is one pass count of a sweep cell-seed.
 
 | cut or choice | reason | what it hides |
 |---|---|---|
 | scikit-learn runs at 100k rows only (`METHOD_NS` in `run_grid.py`) | at 1M it would cost most of a 30-40 h CPU grid for a reference point `faiss-lloyd` already gives | scikit-learn speed and objective at 1M; there `faiss-lloyd` is the only Lloyd baseline |
-| 60-minute cap per cell and seed (`DEFAULT_CAP_MIN`); a cell whose one-pass probe estimate exceeds it is not run | one Lloyd cell at 1M x 65536 would take about 3 h per seed | not run: `faiss-lloyd` cohere 1M x 65536 (est. 3.0-3.1 h); CPU e-means ran it in 2232 s (37 min), GPU e-means in 10.7-80.8 s; `faiss-lloyd` random 1M x 65536 (est. 2.9-3.2 h); CPU e-means ran it in 2140 s (36 min), GPU e-means in 10.8-85.4 s. No Lloyd objective there, so no e-means vs Lloyd comparison |
-| Warm repeat skipped for CPU cells estimated over 300 s (`WARM_MAX_S`) | a warm repeat would double the cost of the largest CPU cells | warm timings of 60 cell-seeds (emeans-cpu, faiss-lloyd, sklearn-lloyd); their cold times are shown |
-| Pass sweep (1, 2, 5, 10, 25 passes) on 3 cells only (`SWEEP_CELLS`): random 100k x 4096, cohere 100k x 4096, cohere 1M x 16384 | each sweep point is a full run per method and seed | passes-to-objective at other sizes and k; the main cells run fixed passes |
+| 60-minute cap per cell-seed (`DEFAULT_CAP_MIN`); a cell-seed whose one-pass probe estimate exceeds it is not run | one Lloyd cell-seed at 1M x 65536 would take about 3 h | not run: `faiss-lloyd` cohere 1M x 65536 (est. 3.0-3.1 h); CPU e-means ran it in 2232 s (37 min), GPU e-means in 10.7-80.8 s; `faiss-lloyd` random 1M x 65536 (est. 2.9-3.2 h); CPU e-means ran it in 2140 s (36 min), GPU e-means in 10.8-85.4 s. No Lloyd objective there, so no e-means vs Lloyd comparison |
+| Warm repeat skipped for CPU cell-seeds estimated over 300 s (`WARM_MAX_S`) | a warm repeat would double the cost of the largest CPU cell-seeds | 60 warm records (42 main cell-seeds, 18 sweep points; emeans-cpu, faiss-lloyd, sklearn-lloyd); their cold times are shown |
+| Pass sweep (1, 2, 5, 10, 25 passes) on 3 settings only (`SWEEP_CELLS`): random 100k x 4096, cohere 100k x 4096, cohere 1M x 16384 | each sweep point is a full run per method and seed | passes-to-objective at other settings; the main cells run fixed passes |
 | `faiss.Kmeans` capped at `niter` 25; e-means at its default 5 passes | fixed, stated passes per method; a Lloyd pass at 1M x 16384 costs about 2 min on CPU | Lloyd at convergence at 1M: it was still improving (cohere 1M x 16384 10 -> 25 passes: 0.18856 -> 0.18746) |
 | 3 seeds per cell (`SEEDS`) | cost | the spread is a min-max over 3 seeds, not a confidence interval |
-| Precision study at k = 1024, 4096 only | cost (6 fits per cell and seed) | precision effects at larger k |
+| Precision study at k = 1024, 4096 only | cost (6 fits per precision cell-seed) | precision effects at larger k |
+| Cell-seeds 4-7 % slower than the clean 2026-11-26 reruns were kept, not rerun (owner, 2026-11-26): emeans-cpu random 1M x 4096 seed 0 (vs seed 2) 31.9 vs 29.8 s/pass (+6.8 %); emeans-cpu random 1M x 4096 seed 1 (vs seed 2) 31.6 vs 29.8 s/pass (+5.8 %); faiss-lloyd cohere 1M x 16384 seed 1 main (vs its 25-pass sweep point) 115.1 vs 110.6 s/pass (+4.1 %) | the gap matches day-to-day variation; a rerun would cost hours | per-pass timings vary by 4-7 % between days and machine states; objectives and pass counts are not affected |
 | CPU cells ran with 8 of the 10 cores (`BENCH_THREADS=8`), `nice 19`, a systemd memory cap of 12 GiB and swap off | keep the machine usable and stop one cell from taking all RAM during multi-day runs | CPU timings at 10 threads; CPU s/pass would likely be somewhat lower with all cores |
 | GPU cells ran with the default 10 host threads | the GPU does the work; host threads only feed it | nothing measured here; CPU and GPU thread counts differ, so GPU-vs-CPU ratios are host-specific |
 | No heavy runs 23:00-07:00 (owner rule); a watcher stopped each grid at 22:00 after the running cell | quiet hours on a shared personal machine | the CPU grid ran over 2026-11-23 to 2026-11-26, so CPU rows come from different days |
-| Load-contaminated cells were rerun: 6 cells (12 records) dropped and rerun on 2026-11-26 on a quiet machine, the drop logged with the dropped lines kept | concurrent jobs on the machine (agent sessions, an image-model probe, a container that pushed the machine into swap) had inflated their per-pass times | the first, slower timings of those cells; they are kept locally, not published |
-| Cells 4-6 % slower than the clean 2026-11-26 reruns were kept, not rerun (owner, 2026-11-26): emeans-cpu random 1M x 4096 seeds 0-1 (31.6-31.9 vs 29.8 s/pass), faiss-lloyd cohere 1M x 16384 seed 1 main (115.1 vs about 110.6 s/pass) | the gap matches day-to-day variation; a rerun would cost hours | per-pass timings vary by 4-6 % between days and machine states; objectives and pass counts are not affected |
+| Load-contaminated cell-seeds were rerun: 6 cell-seeds (cold and warm, 12 records) across 4 cells, dropped and rerun on 2026-11-26 on a quiet machine, the drop logged with the dropped lines kept | concurrent jobs on the machine (agent sessions, an image-model probe, a container that pushed the machine into swap) had inflated their per-pass times | the first, slower timings of those cell-seeds; they are kept locally, not published |
 | scikit-learn cohere records (54) were dropped and rerun on 2026-11-24 after a scoring fix | its centroids were off the unit sphere and scored on a different geometry than the other methods | nothing: the replaced records were wrong, not slow |
 | The precision study's memory cap was raised from 12 to 16 GiB mid-run (2026-11-26) after 1563 cgroup `memory.max` events; 0 OOM kills, peak 12.07 GiB | the study was being throttled at the cap | precision results are unaffected (deterministic fits); its train times are not used anywhere |
-| Precision guidance: option B (owner, 2026-11-23); the 4 random-data spike contradictions are accepted as known | on random data FP16/BF16 drift equals the FP32 other-seed drift; the guidance adds a caution instead of a claim | nothing; the contradictions are listed in the Precision section |
+| Precision guidance: option B (owner, 2026-11-23); the 4 random-data spike contradictions are accepted as known | on random data FP16/BF16 drift equals or slightly exceeds the FP32 other-seed drift; the guidance adds a caution instead of a claim | nothing; the contradictions are listed in the Precision section |
 | `sklearn-lloyd` on spherical data is Euclidean Lloyd on unit-norm rows with one projection of the final centroids to unit length (scikit-learn has no spherical mode) | scikit-learn is a reference point; `faiss-lloyd` (`spherical=True`, normalised every iteration) is the true spherical Lloyd baseline | how true spherical Lloyd would behave in scikit-learn; read spherical comparisons against `faiss-lloyd` |
 
 ## Not run
@@ -543,4 +552,4 @@ Spike check: results contradict the Phase 2 spike; reported as measured, guidanc
 - random euclidean n=1000000 k=1024: bf16 drift_gap median 1 is not below the FP32 other-seed baseline 1
 - random euclidean n=1000000 k=4096: fp16 drift_gap median 1.14 is not below the FP32 other-seed baseline 1.14
 
-Each contradiction is a reduced-precision drift equal to, not below, the FP32 other-seed drift (see the ratio table above). The owner accepted them as known and chose option B on 2026-11-23: the caution above, no other change to the precision guidance.
+Each contradiction is a reduced-precision drift equal to or slightly above the FP32 other-seed drift (random euclidean 100k x 4096: fp16 1.205, bf16 1.208 vs 1.190; random euclidean 1M x 1024: bf16 1.001 vs 1.001; random euclidean 1M x 4096: fp16 1.144 vs 1.144). The owner accepted them as known and chose option B on 2026-11-23: the caution above, no other change to the precision guidance.

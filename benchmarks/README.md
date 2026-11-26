@@ -108,9 +108,13 @@ ceiling. A cell that hits the ceiling is killed on its own and recorded as faile
 swapping:
 
 ```bash
-BENCH_THREADS=8 systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0 \
+BENCH_THREADS=8 systemd-run --user --scope -p MemoryMax=12G -p MemorySwapMax=0 \
   nice -n 19 hatch run bench-cpu:run run_grid.py --methods emeans-cpu faiss-lloyd sklearn-lloyd
 ```
+
+The published CPU runs used this 12 GiB cap (peak 7.5 GiB, at k = 65536). The precision study ran under the same
+12 GiB cap and was raised to 16 GiB mid-run after it was throttled at the cap (peak 12.07 GiB, no OOM kill); give
+the precision study 16 GiB (`-p MemoryMax=16G`).
 
 Every CPU method gets the same thread count, and each record stores it (`host.omp_threads`). Keep other heavy work
 off the machine while it runs, or the timings suffer. A failed or timed-out cell counts as done on resume: delete
@@ -172,11 +176,14 @@ hatch run bench-cpu:run report.py
 contradict the earlier precision spike). `report.py` writes `RESULTS.md` from `results/speed.jsonl` and
 `results/precision.jsonl`.
 
-The published page also compares the Triton records with those of the earlier fork build, which were replaced by
-the `emeans-rocm` 0.2.5 rerun and are kept locally only. To include that section, pass the dropped records:
+Local only: `report.py` can add a comparison of the Triton records with those of the earlier fork build, which were
+replaced by the `emeans-rocm` 0.2.5 rerun and are not committed. The published `RESULTS.md` leaves it out, because
+its source records are not published. On the owner's machine all 192 precision drift_gap medians of the two builds
+were bit-identical. To render it into a local page, pass the dropped records and a scratch output:
 
 ```bash
-hatch run bench-cpu:run report.py --fork-speed scratch/dropped-fork-gpu-speed-20261126T112236.jsonl \
+hatch run bench-cpu:run report.py --out scratch/RESULTS-with-fork.md \
+  --fork-speed scratch/dropped-fork-gpu-speed-20261126T112236.jsonl \
   --fork-precision scratch/dropped-fork-gpu-precision-20261126T112236.jsonl
 ```
 
