@@ -194,6 +194,7 @@ def _variant(
         "precision_requested": requested,
         "precision_used": used,
         "backend": info.get("backend"),
+        "emeans_source": info.get("emeans_source"),
         "train_seconds": info.get("train_seconds"),
     }
     if not finite:
@@ -380,6 +381,10 @@ def _record_context(record: dict[str, Any]) -> dict[str, Any]:
 
     versions = _versions()
     versions.update(_gpu_versions())
+    for entry in record.get("variants", {}).values():
+        if entry.get("emeans_source"):
+            versions["emeans_source"] = entry["emeans_source"]
+            break
     host = _host()
     host["gpu"] = _gpu_name()
     record["host"] = host
@@ -394,12 +399,14 @@ def _gpu_refusal() -> str | None:
         import torch  # noqa: PLC0415
         from haystack_integrations.components.preprocessors.emeans._backend import (  # noqa: PLC0415
             detect_emeans_source,
-            emeans_rocm_importable,
+            emeans_rocm_enabled,
+            emeans_rocm_unsupported_reason,
         )
     except ImportError as exc:
         return msg + f"import failed ({exc})"
-    if not emeans_rocm_importable():
-        return msg + f"e-means source is {detect_emeans_source()}, needs emeans-rocm"
+    if not emeans_rocm_enabled():
+        reason = emeans_rocm_unsupported_reason() or f"e-means source is {detect_emeans_source()}"
+        return msg + f"{reason}; needs an installed emeans-rocm within the supported range"
     if not torch.cuda.is_available():
         return msg + "no GPU visible to torch"
     return None

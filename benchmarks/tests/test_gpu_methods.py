@@ -28,9 +28,9 @@ def _gpu_visible() -> bool:
 
 
 def _emeans_rocm() -> bool:
-    from haystack_integrations.components.preprocessors.emeans._backend import emeans_rocm_importable  # noqa: PLC0415
+    from haystack_integrations.components.preprocessors.emeans._backend import emeans_rocm_enabled  # noqa: PLC0415
 
-    return emeans_rocm_importable()
+    return emeans_rocm_enabled()
 
 
 requires_gpu = pytest.mark.skipif(not _gpu_visible(), reason="needs torch with a visible GPU")
@@ -153,3 +153,75 @@ def test_worker_gpu_fields(tmp_path: Path) -> None:
     assert rec["versions"]["torch"]
     assert rec["versions"]["hip"]
     assert rec["info"]["triton_cache"] in ("persistent", "cleared")
+
+
+def _run_worker_in_process(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path, name: str, info: dict
+) -> dict:
+    import worker  # noqa: PLC0415
+    from methods import MethodSpec, TrainResult  # noqa: PLC0415
+
+    real = METHODS[name]
+
+    def train(x: np.ndarray, init: np.ndarray, **kwargs: object) -> TrainResult:  # noqa: ARG001
+        return TrainResult(init.astype(np.float32), 1.0, dict(info))
+
+    fake = MethodSpec(name, real.engine, real.device, real.default_passes, train, lambda: None)
+    monkeypatch.setattr(worker, "METHODS", {**METHODS, name: fake})
+    monkeypatch.setattr(worker, "_transfer_seconds", lambda x: 0.001)  # noqa: ARG005
+    monkeypatch.setattr(worker, "_gpu_versions", lambda: {"torch": None, "hip": None})
+    monkeypatch.setattr(worker, "_gpu_name", lambda: "fake gpu")
+    argv = ["worker.py", "--method", name, "--data", "random", "--n", "500", "--d", "8", "--k", "4", "--seed", "0"]
+    monkeypatch.setattr(sys, "argv", [*argv, "--scratch", str(tmp_path)])
+    assert worker.main() == 0
+    return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+
+def test_worker_record_uses_fit_engine_label(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    info = {"emeans_source": "faiss-cpu 0.0.1-fit", "train_seconds": 0.1}
+    rec = _run_worker_in_process(monkeypatch, capsys, tmp_path, "emeans-gpu-triton-bf16", info)
+    assert rec["versions"]["emeans_source"] == "faiss-cpu 0.0.1-fit"
+    assert rec["info"]["emeans_source"] == "faiss-cpu 0.0.1-fit"
+
+
+def test_worker_record_lloyd_keeps_no_engine(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    rec = _run_worker_in_process(monkeypatch, capsys, tmp_path, "faiss-lloyd", {"train_seconds": 0.1})
+    assert rec["versions"]["emeans_source"] is None
+
+
+def test_worker_record_falls_back_to_env_label(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    import worker  # noqa: PLC0415
+
+    rec = _run_worker_in_process(monkeypatch, capsys, tmp_path, "emeans-cpu", {"train_seconds": 0.1})
+    assert rec["versions"]["emeans_source"] == worker._versions("emeans-cpu")["emeans_source"]
+    assert rec["versions"]["emeans_source"] is not None
+
+
+def test_gpu_reason_refuses_out_of_range_emeans_rocm(monkeypatch: pytest.MonkeyPatch) -> None:
+    from haystack_integrations.components.preprocessors.emeans import _backend  # noqa: PLC0415
+
+    import methods  # noqa: PLC0415
+    import precision  # noqa: PLC0415
+
+    class FakeTorch:
+        class cuda:  # noqa: N801
+            @staticmethod
+            def is_available() -> bool:
+                return True
+
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch)
+    monkeypatch.setattr(_backend, "emeans_rocm_importable", lambda: True)
+    monkeypatch.setattr(_backend, "emeans_rocm_enabled", lambda: False)
+    reason = methods._gpu_reason(want_emeans_rocm=True)
+    assert reason is not None
+    assert "bench-gpu-fork env" in reason
+    assert methods._gpu_reason(want_emeans_rocm=False) is None
+    refusal = precision._gpu_refusal()
+    assert refusal is not None
+    assert "bench-gpu-fork env" in refusal

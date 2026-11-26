@@ -167,7 +167,7 @@ def _emeans_gpu(expected_backend: str, precision: str) -> Callable[..., TrainRes
 
 def _gpu_reason(*, want_emeans_rocm: bool) -> str | None:
     """Return why a GPU method cannot run in this env, or `None` when it can."""
-    from haystack_integrations.components.preprocessors.emeans._backend import emeans_rocm_importable  # noqa: PLC0415
+    from haystack_integrations.components.preprocessors.emeans._backend import emeans_rocm_enabled  # noqa: PLC0415
 
     env_name = "bench-gpu-fork env (emeans-rocm installed)" if want_emeans_rocm else "bench-gpu env (stock e-means)"
     try:
@@ -176,7 +176,7 @@ def _gpu_reason(*, want_emeans_rocm: bool) -> str | None:
         return f"torch is not installed; needs the {env_name}"
     if not torch.cuda.is_available():
         return f"torch sees no GPU; needs the {env_name}"
-    if emeans_rocm_importable() != want_emeans_rocm:
+    if emeans_rocm_enabled() != want_emeans_rocm:
         return f"needs the {env_name}"
     return None
 

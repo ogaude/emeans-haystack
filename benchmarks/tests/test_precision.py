@@ -59,7 +59,7 @@ def test_cell_data_prep(monkeypatch: pytest.MonkeyPatch) -> None:
     assert np.array_equal(x, unit)
 
 
-def _fake_fit(*, fallback: bool = False, nonfinite: bool = False) -> Any:
+def _fake_fit(*, fallback: bool = False, nonfinite: bool = False, source: str | None = None) -> Any:
     def fit(x: np.ndarray, init: np.ndarray, *, k: int, spherical: bool, seed: int, precision: str) -> Any:  # noqa: ARG001
         c = init.astype(np.float32) + (0.001 * (seed + 1)) * np.ones_like(init)
         if precision != "fp32":
@@ -68,7 +68,10 @@ def _fake_fit(*, fallback: bool = False, nonfinite: bool = False) -> Any:
         if nonfinite and precision == "fp16":
             c = c.copy()
             c[0, 0] = np.inf
-        return c, {"precision_used": used, "backend": "fake", "train_seconds": 0.5}
+        info = {"precision_used": used, "backend": "fake", "train_seconds": 0.5}
+        if source is not None:
+            info["emeans_source"] = source
+        return c, info
 
     return fit
 
@@ -176,3 +179,24 @@ def test_precision_cell_gpu() -> None:
             assert key in entry
     assert record["variants"]["fp32_rerun"]["drift_gap_max"] == 0.0
     assert record["variants"]["fp32_rerun"]["share_same_cluster"] == 1.0
+
+
+def test_precision_variant_carries_engine_label() -> None:
+    record = run_cell(_cell(), fit=_fake_fit(source="faiss-cpu 1.16.0"), d=16)
+    for name in ("fp32_rerun", "fp32_other_seed", "fp16", "bf16"):
+        assert record["variants"][name]["emeans_source"] == "faiss-cpu 1.16.0"
+    assert record["variants"]["round16"]["emeans_source"] is None
+    record = run_cell(_cell(), fit=_fake_fit(), d=16)
+    assert record["variants"]["fp16"]["emeans_source"] is None
+
+
+def test_precision_record_versions_follow_variant(monkeypatch: pytest.MonkeyPatch) -> None:
+    import worker  # noqa: PLC0415
+
+    monkeypatch.setattr(worker, "_gpu_versions", dict)
+    monkeypatch.setattr(worker, "_gpu_name", lambda: "fake gpu")
+    monkeypatch.setattr(worker, "_versions", lambda method=None: {"emeans_source": "emeans-rocm 0.2.5"})  # noqa: ARG005
+    record = precision._record_context(run_cell(_cell(), fit=_fake_fit(source="faiss-cpu 1.16.0"), d=16))
+    assert record["versions"]["emeans_source"] == "faiss-cpu 1.16.0"
+    record = precision._record_context(run_cell(_cell(), fit=_fake_fit(), d=16))
+    assert record["versions"]["emeans_source"] == "emeans-rocm 0.2.5"

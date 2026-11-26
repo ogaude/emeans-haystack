@@ -174,6 +174,9 @@ def main() -> int:
     np.save(path, result.centroids, allow_pickle=False)
 
     versions = _versions(args.method)
+    # The label comes from the fit itself: a GPU fit that fell back to the stock engine reports that engine.
+    if info.get("emeans_source"):
+        versions["emeans_source"] = info["emeans_source"]
     host = _host()
     if is_gpu:
         versions.update(_gpu_versions())
