@@ -18,7 +18,7 @@ from typing import Any, Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from data import DATASETS
+from data import DATASETS, provenance
 from methods import METHODS
 
 BENCH_DIR = Path(__file__).resolve().parent
@@ -298,6 +298,7 @@ def _records(
                 "d": DIM,
                 "data": cell.data,
                 "data_id": (w.get("data_info") or {}).get("data_id"),
+                **provenance(w.get("data_info")),
                 "mode": cell.mode,
                 "seed": cell.seed,
                 "kind": cell.kind,

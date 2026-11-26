@@ -99,6 +99,29 @@ def test_record_shape_and_baselines() -> None:
     assert record["prep"] == "raw"
 
 
+def test_record_subset_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    record = run_cell(_cell(), fit=_fake_fit(), d=16)
+    assert record["subset_seed"] is None
+    assert record["subset_rows_sha256"] is None
+    unit = np.random.default_rng(0).standard_normal((2000, 16)).astype(np.float32)
+    unit /= np.linalg.norm(unit, axis=1, keepdims=True)
+    info = {
+        "data_id": "cohere@rev",
+        "subset_seed": 20261105,
+        "subset_rows_sha256": "cd" * 32,
+        "rows_normalised": True,
+        "raw_norm_min": 0.5,
+        "raw_norm_max": 2.0,
+    }
+    monkeypatch.setattr(precision.data_mod, "load_dataset", lambda _n, _s, _d=768: (unit, info))
+    record = run_cell(PCell(2000, 8, "cohere", "spherical", 0), fit=_fake_fit())
+    assert record["data_id"] == "cohere@rev"
+    assert record["subset_seed"] == 20261105
+    assert record["subset_rows_sha256"] == "cd" * 32
+    assert record["rows_normalised"] is True
+    assert (record["raw_norm_min"], record["raw_norm_max"]) == (0.5, 2.0)
+
+
 def test_bf16_rounding() -> None:
     values = np.array([1.0, 1.00390625, 3.14159265, -2.5e-3, 1e30], dtype=np.float32)
     rounded = precision._round_bf16(values)

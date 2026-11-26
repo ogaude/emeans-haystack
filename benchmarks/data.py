@@ -20,6 +20,8 @@ COHERE_D = 768
 _UNIT_CHECK_ROWS = 10_000
 _UNIT_TOLERANCE = 1e-3
 _CHUNK = 65536
+# Provenance fields of a loaded dataset that every result record carries (None where they do not apply).
+PROVENANCE_KEYS = ("subset_seed", "subset_rows_sha256", "rows_normalised", "raw_norm_min", "raw_norm_max")
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,17 @@ def load_dataset(name: str, n: int, d: int = 768) -> tuple[np.ndarray, dict]:
     :returns: The matrix and a provenance dict.
     """
     return DATASETS[name].load(n, d)
+
+
+def provenance(info: dict | None) -> dict:
+    """
+    Pick the subset and row-preparation fields of a dataset's provenance for a result record.
+
+    :param info: The provenance dict returned by `load_dataset`, or None if no data was loaded.
+    :returns: One entry per `PROVENANCE_KEYS` name, None when the dataset does not set it (random data).
+    """
+    source = info or {}
+    return {key: source.get(key) for key in PROVENANCE_KEYS}
 
 
 def starts(x: np.ndarray, k: int, seed: int) -> np.ndarray:

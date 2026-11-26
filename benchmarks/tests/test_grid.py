@@ -15,7 +15,8 @@ SCHEMA_KEYS = {
     "schema", "key", "timing", "method", "engine", "device", "backend", "precision", "env", "n", "k", "n_x_k", "d",
     "data", "data_id", "mode", "seed", "kind", "passes_requested", "passes_used", "seconds", "transfer_s",
     "objective", "objective_sum", "status", "skipped_reason", "estimate_s", "estimate_basis", "host", "versions",
-    "triton_cache", "timestamp",
+    "triton_cache", "timestamp", "subset_seed", "subset_rows_sha256", "rows_normalised", "raw_norm_min",
+    "raw_norm_max",
 }  # fmt: skip
 
 
@@ -189,3 +190,30 @@ def test_record_schema(tmp_path: Path) -> None:
     assert records[1]["seconds"] == 1.0
     assert records[0]["n_x_k"] == 10_000 * 256
     assert records[0]["mode"] == "euclidean"
+    assert records[0]["subset_seed"] is None
+    assert records[0]["subset_rows_sha256"] is None
+
+
+def test_record_carries_subset_provenance(tmp_path: Path) -> None:
+    info = {
+        "data_id": "cohere@rev",
+        "subset_seed": 20261105,
+        "subset_rows_sha256": "ab" * 32,
+        "rows_normalised": True,
+        "raw_norm_min": 0.5,
+        "raw_norm_max": 2.0,
+    }
+
+    class CohereRunner(FakeRunner):
+        def train(self, cell: Cell, *, warm: bool) -> dict[str, Any]:
+            return {**super().train(cell, warm=warm), "data_info": info}
+
+    records = _run([_cell(data="cohere")], tmp_path, CohereRunner())
+    assert len(records) == 2
+    for record in records:
+        assert set(record) == SCHEMA_KEYS
+        assert record["data_id"] == "cohere@rev"
+        assert record["subset_seed"] == 20261105
+        assert record["subset_rows_sha256"] == "ab" * 32
+        assert record["rows_normalised"] is True
+        assert (record["raw_norm_min"], record["raw_norm_max"]) == (0.5, 2.0)

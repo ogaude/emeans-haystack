@@ -257,6 +257,7 @@ def run_cell(
         "n_x_k": cell.n * cell.k,
         "data": cell.data,
         "data_id": data_info.get("data_id"),
+        **data_mod.provenance(data_info),
         "mode": cell.mode,
         "prep": prep,
         "seed": cell.seed,
