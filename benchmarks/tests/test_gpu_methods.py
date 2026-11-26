@@ -227,6 +227,8 @@ def test_gpu_reason_refuses_out_of_range_emeans_rocm(monkeypatch: pytest.MonkeyP
     refusal = precision._gpu_refusal()
     assert refusal is not None
     assert "emeans-rocm 0.3.0 is outside the supported range" in refusal
+    # The study refuses to run, so the refusal must not also claim a fallback to the stock engine.
+    assert "stock" not in refusal
 
 
 def test_gpu_reason_accepts_in_range_emeans_rocm(monkeypatch: pytest.MonkeyPatch) -> None:

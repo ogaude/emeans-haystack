@@ -406,7 +406,10 @@ def _gpu_refusal() -> str | None:
     except ImportError as exc:
         return msg + f"import failed ({exc})"
     if not emeans_rocm_enabled():
-        reason = emeans_rocm_unsupported_reason() or f"e-means source is {detect_emeans_source()}"
+        # Keep only the version clause: the backend's "using the stock engine" tail is the fitter's fallback,
+        # but this study refuses to run rather than fall back.
+        unsupported = emeans_rocm_unsupported_reason()
+        reason = unsupported.partition(";")[0] if unsupported else f"e-means source is {detect_emeans_source()}"
         return msg + f"{reason}; needs an installed emeans-rocm within the supported range"
     if not torch.cuda.is_available():
         return msg + "no GPU visible to torch"
