@@ -18,6 +18,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import report_notes as notes
+from data import COHERE_SUBSET_ROWS_SHA256, COHERE_SUBSET_SEED
 from methods import METHODS
 from precision import KS as PRECISION_KS
 from precision import PCell, precision_grid
@@ -241,9 +242,16 @@ def _protocol() -> list[str]:
             "comparisons should be read against it. scikit-learn has no spherical mode: `sklearn-lloyd` runs "
             "Euclidean Lloyd on the unit-norm rows and projects its final centroids to unit length once, after "
             "training, so it is scored on the sphere but is not spherical Lloyd (no projection per iteration). "
-            "The Cohere file's rows are not unit-norm: the harness normalises every row to unit length when it "
-            "loads them (the raw norm range is recorded in each run's data provenance). "
+            "The Cohere file's rows are not unit-norm (raw L2 norms about 12 to 17.5): the harness normalises "
+            "every row to unit length when it loads them. "
             "Random data is Euclidean and is for speed only: Gaussian noise has no cluster structure."
+        ),
+        (
+            "- The real 100k set is a seeded, sorted random subset of the 1M Cohere rows: seed "
+            f"{COHERE_SUBSET_SEED} (`COHERE_SUBSET_SEED` in `data.py`), row-index sha256 "
+            f"`{COHERE_SUBSET_ROWS_SHA256}`. "
+            "The records published here do not carry the subset seed, row-index sha256 or raw norm range per "
+            "record; records written by later runs do."
         ),
         (
             "- Cold: the first run in a fresh process, including the backend probe and Triton JIT with the "

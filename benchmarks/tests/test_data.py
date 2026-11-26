@@ -205,3 +205,8 @@ def test_cohere_normalises_non_unit_rows(tmp_path: Path) -> None:
     assert np.allclose(np.linalg.norm(x, axis=1), 1.0, atol=1e-5)
     assert info["rows_normalised"] is True
     assert info["raw_norm_max"] > 1.0 + 1e-3
+
+
+def test_published_cohere_subset_sha() -> None:
+    rows = np.sort(np.random.default_rng(data.COHERE_SUBSET_SEED).choice(data.COHERE_ROWS, 100_000, replace=False))
+    assert hashlib.sha256(rows.astype(np.int64).tobytes()).hexdigest() == data.COHERE_SUBSET_ROWS_SHA256

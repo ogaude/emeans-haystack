@@ -5,9 +5,10 @@
 """
 Download the pinned Cohere Wikipedia embeddings into the gitignored cache and verify them.
 
-The file is a headerless float32 row-major matrix of 1,000,000 x 768 L2-normalised rows. The download is pinned to one
-dataset revision, resumes a partial `.part` file with an HTTP Range request, and is renamed into place only after its
-size and sha256 match. Run it again at any time with `--verify-only` to re-check the file on disk.
+The file is a headerless float32 row-major matrix of 1,000,000 x 768 rows. The rows are not unit-norm (raw L2 norms
+about 12 to 17.5); the loader in `data.py` normalises them. The download is pinned to one dataset revision, resumes a
+partial `.part` file with an HTTP Range request, and is renamed into place only after its size and sha256 match. Run
+it again at any time with `--verify-only` to re-check the file on disk.
 """
 
 import argparse

@@ -15,6 +15,8 @@ import fetch_data
 
 RANDOM_DATA_SEED = 20261122
 COHERE_SUBSET_SEED = 20261105
+# sha256 of the sorted int64 row indices of the 100k Cohere subset drawn with COHERE_SUBSET_SEED.
+COHERE_SUBSET_ROWS_SHA256 = "19fd6db7de0e1f3c90a6bf0a4ad6e370a4a92fe07bbaa17b590018286ca6ac72"
 COHERE_ROWS = 1_000_000
 COHERE_D = 768
 _UNIT_CHECK_ROWS = 10_000

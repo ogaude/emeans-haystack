@@ -37,7 +37,9 @@ The same protocol is printed at the top of `RESULTS.md`.
   scikit-learn has no spherical mode: `sklearn-lloyd` runs Euclidean Lloyd on the unit-norm rows, then projects
   its final centroids to unit length once, after training. It is scored on the sphere like the others, but it is
   not spherical Lloyd (no projection per iteration).
-  The real 100k set is a seeded random subset of the 1M rows; the seed and a row-index checksum are recorded.
+  The real 100k set is a seeded, sorted random subset of the 1M rows: seed 20261105 (`COHERE_SUBSET_SEED` in
+  `data.py`), row-index sha256 `19fd6db7de0e1f3c90a6bf0a4ad6e370a4a92fe07bbaa17b590018286ca6ac72`. The published records predate the per-record fields; records
+  written since carry `subset_seed`, `subset_rows_sha256` and the raw norm range.
 - Each cell has a per-seed time cap (default 60 minutes). A cell whose estimate is over the cap is reported as
   `not run: est. X h`, never dropped.
 
