@@ -62,7 +62,12 @@ def test_readme_benchmarks_unchanged() -> None:
     text = _readme()
     start = text.index("## Benchmarks")
     end = text.index("## Contributing")
-    assert hashlib.sha256(text[start:end].encode("utf-8")).hexdigest() == BENCHMARKS_SHA256
+    digest = hashlib.sha256(text[start:end].encode("utf-8")).hexdigest()
+    assert digest == BENCHMARKS_SHA256, (
+        "the README ## Benchmarks section changed. This lock catches unreviewed edits to the results claims: "
+        "re-check every claim in the section against benchmarks/RESULTS.md, then set BENCHMARKS_SHA256 in "
+        f"tests/test_readme.py to {digest}"
+    )
 
 
 def test_readme_numpy_requirement() -> None:
