@@ -223,8 +223,11 @@ def _protocol() -> list[str]:
             "difference to the Lloyd `faiss-lloyd` median objective in the same cell."
         ),
         (
-            "- Real data is spherical (scikit-learn runs on unit-norm input; its centroids are projected to unit "
-            "length after training so all three methods are scored on the sphere). "
+            "- Real data is spherical. `faiss-lloyd` (`faiss.Kmeans(spherical=True)`) normalises its centroids "
+            "to unit length after every iteration: it is the true spherical Lloyd baseline, and spherical "
+            "comparisons should be read against it. scikit-learn has no spherical mode: `sklearn-lloyd` runs "
+            "Euclidean Lloyd on the unit-norm rows and projects its final centroids to unit length once, after "
+            "training, so it is scored on the sphere but is not spherical Lloyd (no projection per iteration). "
             "The Cohere file's rows are not unit-norm: the harness normalises every row to unit length when it "
             "loads them (the raw norm range is recorded in each run's data provenance). "
             "Random data is Euclidean and is for speed only: Gaussian noise has no cluster structure."

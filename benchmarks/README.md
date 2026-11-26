@@ -32,6 +32,11 @@ The same protocol is printed at the top of `RESULTS.md`.
 - At least 3 seeds (0, 1, 2).
 - Grid: k = 1024, 4096, 16384, 65536 at n = 100k and 1M, on random Euclidean data and on real spherical data.
 - Real data is the Cohere Wikipedia embeddings. The file is not unit-norm, so the loader normalises each row.
+- Spherical baselines: `faiss-lloyd` (`faiss.Kmeans(spherical=True)`) normalises its centroids to unit length
+  after every iteration, so it is the true spherical Lloyd baseline; read spherical comparisons against it.
+  scikit-learn has no spherical mode: `sklearn-lloyd` runs Euclidean Lloyd on the unit-norm rows, then projects
+  its final centroids to unit length once, after training. It is scored on the sphere like the others, but it is
+  not spherical Lloyd (no projection per iteration).
   The real 100k set is a seeded random subset of the 1M rows; the seed and a row-index checksum are recorded.
 - Each cell has a per-seed time cap (default 60 minutes). A cell whose estimate is over the cap is reported as
   `not run: est. X h`, never dropped.
