@@ -291,10 +291,21 @@ def test_numpy_floor() -> None:
     assert "numpy>=2.0" in _pyproject()["project"]["dependencies"]
 
 
+REPO_ROOT = INTEGRATION_ROOT.parent.parent
+# Only this standalone repository has UPSTREAM.md at its root; haystack-core-integrations does not.
+STANDALONE_REPO = (REPO_ROOT / "UPSTREAM.md").is_file()
+
+
 def test_license_copyright() -> None:
-    integration_license = (INTEGRATION_ROOT / "LICENSE.txt").read_bytes()
-    root_license = (INTEGRATION_ROOT.parent.parent / "LICENSE").read_bytes()
-    assert integration_license == root_license
-    text = integration_license.decode("utf-8")
+    text = (INTEGRATION_ROOT / "LICENSE.txt").read_text(encoding="utf-8")
+    assert "Apache License" in text
+    assert "Version 2.0, January 2004" in text
+    assert "TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION" in text
     assert "[yyyy]" not in text
     assert "[name of copyright owner]" not in text
+    assert re.search(r"^\s*Copyright \d{4}-present \S", text, re.MULTILINE), "LICENSE.txt names no copyright holder"
+
+
+@pytest.mark.skipif(not STANDALONE_REPO, reason="the repository root LICENSE belongs to the monorepo, not this package")
+def test_license_matches_repo_root() -> None:
+    assert (INTEGRATION_ROOT / "LICENSE.txt").read_bytes() == (REPO_ROOT / "LICENSE").read_bytes()
