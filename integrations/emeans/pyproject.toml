@@ -96,14 +96,14 @@ gpu-tests = 'pytest -m gpu {args:tests}'
 unit = 'pytest -m "not integration" {args:tests}'
 run = "python {args}"
 
-# Local only: installs `emeans-rocm` 0.2.5 from PyPI on top of the ROCm torch of the `gpu` env. A child env's
+# Local only: installs `emeans-rocm` 0.2.6 from PyPI on top of the ROCm torch of the `gpu` env. A child env's
 # `extra-dependencies` replace the template list, so the torch pin is repeated here. The accepted dependency-confusion
 # risk of the `gpu` env (unsafe-best-match with the AMD extra index) also covers `emeans-rocm`: it is pinned exactly,
-# PyPI is the intended source, the AMD index returned 404 for `emeans-rocm` on 2026-11-23, and the pin is revisited
+# PyPI is the intended source, the AMD index returned 404 for `emeans-rocm` on 2026-11-23 and 2026-11-27, and the pin is revisited
 # by hand, never auto-bumped.
 [tool.hatch.envs.gpu-fork]
 template = "gpu"
-extra-dependencies = ["torch[device-{env:EMEANS_ROCM_GFX:gfx1200}]==2.14.0+rocm10.1.0", "emeans-rocm==0.2.5"]
+extra-dependencies = ["torch[device-{env:EMEANS_ROCM_GFX:gfx1200}]==2.14.0+rocm10.1.0", "emeans-rocm==0.2.6"]
 
 [tool.mypy]
 install_types = true
