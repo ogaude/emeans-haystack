@@ -14,8 +14,6 @@
 pip install emeans-haystack            # CPU: brings haystack-ai, faiss-cpu and numpy
 ```
 
-Until the package is on PyPI, install it from a clone: `pip install ./integrations/emeans`.
-
 Requirements: Python 3.11 or newer, `haystack-ai>=3.5`, `faiss-cpu>=1.16.0` (the first release that contains
 `faiss.contrib.e_means`), `numpy>=2.0`.
 

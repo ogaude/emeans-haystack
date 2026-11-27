@@ -24,11 +24,11 @@ The ranker never clusters: it reads the `cluster_id` written at indexing time by
 
 ## Installation
 
-Nothing is on PyPI yet. Clone the repository and install from the clone:
-
 ```bash
-pip install ./integrations/emeans            # CPU: brings haystack-ai, faiss-cpu and numpy
+pip install emeans-haystack                  # CPU: brings haystack-ai, faiss-cpu and numpy
 ```
+
+For development, install from a clone instead: `pip install ./integrations/emeans`.
 
 Requirements: Python 3.11 or newer, `haystack-ai>=3.5`, `faiss-cpu>=1.16.0` (the first release that contains
 `faiss.contrib.e_means`), `numpy>=2.0`.
@@ -36,7 +36,7 @@ Requirements: Python 3.11 or newer, `haystack-ai>=3.5`, `faiss-cpu>=1.16.0` (the
 **GPU, NVIDIA:**
 
 ```bash
-pip install "./integrations/emeans[gpu]"     # adds PyTorch from PyPI (CUDA build)
+pip install "emeans-haystack[gpu]"           # adds PyTorch from PyPI (CUDA build)
 ```
 
 **GPU, AMD (ROCm):** install the ROCm build of PyTorch first, from AMD's or PyTorch's ROCm index, then install the

@@ -5,7 +5,7 @@
 - The README now states the supported emeans-rocm range (`>=0.2.5,<0.3`) and what happens outside it: a release outside the range is not used, GPU fits run on the stock faiss-cpu e-means engine (on AMD in native FP32), a warning (once per process) names the installed version and the range, and `stats["emeans_source"]` is `"faiss-cpu <version>"`.
 - Benchmark records now carry `unused_threshold` (benchmarks only, not the package).
 - The README benchmark links are now absolute GitHub URLs, so they work on the PyPI page.
-- First release on PyPI.
+- First release on PyPI: `pip install emeans-haystack`. The README no longer asks to install from a clone.
 - No code or API change: the public API and the `.npz` model format are unchanged.
 
 ## 0.1.1

@@ -5,7 +5,7 @@ This file records what must change when `integrations/emeans/` is contributed to
 new-integration proposal. The goal is that the move needs no change inside `integrations/emeans/` other than the items
 under "Differences to resolve on the move".
 
-**Nothing has been opened upstream: no issue, no pull request. This repository has no remote.** The proposal below is a
+**Nothing has been opened upstream: no issue, no pull request. This repository is public at https://github.com/ogaude/emeans-haystack and the package is on PyPI as `emeans-haystack`.** The proposal below is a
 draft only.
 
 Checked against the live upstream files on **2026-11-26** (read-only, unauthenticated fetches of public URLs):
@@ -36,7 +36,7 @@ dedicated check.
 | Scaffold creates the integration folder, workflow, `labeler.yml` entry, `CI_coverage_comment.yml` entry and root README row | CONTRIBUTING, `scripts/create_new_integration.py` | Done for folder and workflow (by hand); the three monorepo edits are Todo-on-move | `.github/workflows/emeans.yml`; see "Monorepo edits on the move" |
 | Use Hatch only; never run `python` or `pip` directly | AGENTS "Environment" | Done | every command in the CI workflow and the docs goes through `hatch run` |
 | Versioning by git tag `integrations/<name>-v<version>`; only maintainers release | AGENTS "Versioning" | Done | `tag-pattern` and `git_describe_command` in `pyproject.toml`; upstream maintainers release, the 0.1.0 and 0.1.1 tags live only in this repository |
-| Changelog is auto-generated, not edited by hand | AGENTS "Changelogs" | Todo-on-move | `integrations/emeans/CHANGELOG.md` has hand-written 0.1.0 and 0.1.1 entries; upstream generates the changelog on release, so drop or replace the hand entries in the upstream copy |
+| Changelog is auto-generated, not edited by hand | AGENTS "Changelogs" | Todo-on-move | `integrations/emeans/CHANGELOG.md` has hand-written 0.1.0, 0.1.1 and 0.1.2 entries; upstream generates the changelog on release, so drop or replace the hand entries in the upstream copy |
 | Target Haystack 3.x; create clients and models in `warm_up()`; keep `__init__` light | AGENTS "API Design" | Reviewer to confirm | `EmeansDocumentClusterer.warm_up()` loads the saved model; the fitter and the ranker hold no model, but a reviewer should confirm the split |
 | Keep `to_dict()`/`from_dict()` symmetric with `__init__`; build on `default_to_dict`/`default_from_dict` | AGENTS "API Design" | Done | `to_dict`/`from_dict` on all three components; round-trip tests in `integrations/emeans/tests/` |
 | Add async APIs only for native async I/O | AGENTS "API Design" | Done | no `run_async` anywhere; the components are CPU/GPU compute, not async I/O |
@@ -106,8 +106,8 @@ must include them. Formats below are from the 2026-11-26 fetch.
 | README length against the minimal-README expectation | `integrations/emeans/README.md` | reduce to badges, integration page, changelog and Contributing (pyversity pattern); move installation, GPU and benchmark text to the integration docs page; `tests/test_readme.py` must change with it (see its row) |
 | `tests/test_readme.py` checks README content: it runs the `## Quick Start` block, sha256-locks the `## Benchmarks` section (`BENCHMARKS_SHA256`), and requires `## Citation`, `## License` and the `numpy>=2.0` text. The two README rows above (the RESULTS.md link, the minimal README) break every test in it | `integrations/emeans/tests/test_readme.py` | change it in the same commit as the README. If only the RESULTS.md link changes, update `BENCHMARKS_SHA256` to the new section's hash. When the README is reduced, delete the file, or move the Quick Start exec and the citation checks to wherever the moved text lives (the integration docs page) |
 | `.github/workflows/publish.yml` publishes this repository to TestPyPI and PyPI through Trusted Publishing | `.github/workflows/publish.yml` | personal-repo-only: not part of the upstream move, because upstream has its own release process. Do not copy it into haystack-core-integrations |
-| `CHANGELOG.md` hand-written 0.1.0 and 0.1.1 entries | `integrations/emeans/CHANGELOG.md` | generated upstream; drop or replace the hand entries on the move |
-| Version tags `integrations/emeans-v0.1.0` and `integrations/emeans-v0.1.1` exist only in this repository | git | upstream maintainers release; nothing to move |
+| `CHANGELOG.md` hand-written 0.1.0, 0.1.1 and 0.1.2 entries | `integrations/emeans/CHANGELOG.md` | generated upstream; drop or replace the hand entries on the move |
+| Version tags `integrations/emeans-v0.1.0`, `-v0.1.1` and `-v0.1.2` exist only in this repository (0.1.2 is the first PyPI release) | git | upstream maintainers release; nothing to move |
 | `keywords = []` | `pyproject.toml` | add relevant keywords (scaffold next step 6) |
 | In-place `.score` mutation in test fixtures | `tests/` | switch to `dataclasses.replace` (see checklist) |
 
