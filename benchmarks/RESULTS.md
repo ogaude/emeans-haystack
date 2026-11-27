@@ -1,6 +1,6 @@
 # Benchmark results
 
-Generated 2026-11-27T13:59:33+00:00.
+Generated 2026-11-27T14:00:23+00:00.
 - host: rx9060xt
 - CPU: Intel(R) Core(TM) Ultra 5 225
 - cores: 10
@@ -344,7 +344,7 @@ Gate and override: before the full 0.2.6 rerun, a smoke gate on the 100k subset 
 
 GPU centroids at d > 2 differ slightly from 0.2.5, because 0.2.6 places revived centroids differently (same revival rule, different split placement). The agreement figures above measure how much that moves assignments.
 
-Timings, as measured: the per-cell Triton fit times of 0.2.6 have a median of 0.98 times those of 0.2.5. The whole runs took longer, by about 15-20 %: the grid 4 h 35 min against 3 h 58 min, the precision study 4964 s against about 4006 s. These wall times include everything around the fits and are not interpreted here; speed is not the claim of this page.
+Timings, as measured: the Triton fit times of 0.2.6 are about those of 0.2.5 when cold (median ratio in the speed line above) and shorter when warm. The whole runs took longer, by about 15-20 %: the grid 4 h 35 min against 3 h 58 min, the precision study 4964 s against about 4006 s. These wall times include everything around the fits and are not interpreted here; speed is not the claim of this page.
 
 ## Pass sweep
 
