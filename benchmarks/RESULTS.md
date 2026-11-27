@@ -1,6 +1,6 @@
 # Benchmark results
 
-Generated 2026-11-27T14:16:39+00:00.
+Generated 2026-11-27T14:19:12+00:00.
 - host: rx9060xt
 - CPU: Intel(R) Core(TM) Ultra 5 225
 - cores: 10
@@ -473,7 +473,7 @@ Every cut made to save time or memory, with its reason and what it hides. A sett
 | The precision study's memory cap was raised from 12 to 16 GiB mid-run (2026-11-26) after 1563 cgroup `memory.max` events; 0 OOM kills, peak 12.07 GiB | the study was being throttled at the cap | precision results are unaffected (deterministic fits); its train times are not used anywhere |
 | Precision guidance: option B (owner, 2026-11-23); the random-data spike contradictions of the 0.2.6 records were accepted by the owner on 2026-11-27 (those of the 0.2.5 records on 2026-11-23) | on random data FP16/BF16 drift equals or slightly exceeds the FP32 other-seed drift; the guidance adds a caution instead of a claim | nothing; the contradictions are listed in the Precision section |
 | `sklearn-lloyd` on spherical data is Euclidean Lloyd on unit-norm rows with one projection of the final centroids to unit length (scikit-learn has no spherical mode) | scikit-learn is a reference point; `faiss-lloyd` (`spherical=True`, normalised every iteration) is the true spherical Lloyd baseline | how true spherical Lloyd would behave in scikit-learn; read spherical comparisons against `faiss-lloyd` |
-| ARI between 0.2.5 and 0.2.6 on 8 settings x 3 seeds only (n = 100k, k = 1024 and 4096, random and Cohere, Triton FP32 and BF16) | the 0.2.5 grid kept no centroids or assignments; a full 0.2.5 rerun with saved centroids would cost about 5 more GPU hours and 6-7 GB | assignment agreement at 1M rows, at k = 16384 and 65536 and on sweep cells; objectives and times are compared on all 186 Triton cells |
+| ARI between 0.2.5 and 0.2.6 on 8 settings x 3 seeds only (n = 100k, k = 1024 and 4096, random and Cohere, Triton FP32 and BF16) | the 0.2.5 grid kept no centroids or assignments; a full 0.2.5 rerun with saved centroids would cost about 5 more GPU hours and 6-7 GB | assignment agreement at 1M rows, at k = 16384 and 65536 and on sweep cells; objectives and times are compared on all 62 Triton cells x 3 seeds (186 cell-seed runs per timing) |
 
 ## Not run
 
