@@ -1667,7 +1667,8 @@ def version_comparison(
         spread = ", ".join(f"{v} {x:.3f} %" for v, x in sorted(largest.items()))
         out.append(
             f"emeans-rocm 0.2.6 has a median objective outside the min-max of the 3 seeds of 0.2.5 of the same cell "
-            f"in {len(outside)} cells" + (f" ({listed})" if outside else "")
+            f"in {len(outside)} cells"
+            + (f" ({listed})" if outside else "")
             + (f"; the largest main-cell objective difference is {spread}" if spread else "")
             + f". The smoke gate passed its objective part in {n_obj} of {len(ari)} settings and its ARI part in "
             f"{n_ari} of {len(ari)}."
