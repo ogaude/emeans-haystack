@@ -1,6 +1,6 @@
 # Benchmark results
 
-Generated 2026-11-27T14:19:12+00:00.
+Generated 2026-11-27T14:46:09+00:00.
 - host: rx9060xt
 - CPU: Intel(R) Core(TM) Ultra 5 225
 - cores: 10
@@ -35,7 +35,7 @@ Generated 2026-11-27T14:19:12+00:00.
 - scikit-learn runs at 100k rows only, to save time: `faiss-lloyd` is the Lloyd baseline at every size, so the 1M rows have no scikit-learn entries.
 - Final objective: mean squared distance to the nearest centroid, from one exact FP32 CPU scorer (`faiss.IndexFlatL2`), never a library's own objective. The `vs faiss` column is the relative difference to the Lloyd `faiss-lloyd` median objective in the same cell.
 - Real data is spherical. `faiss-lloyd` (`faiss.Kmeans(spherical=True)`) normalises its centroids to unit length after every iteration: it is the true spherical Lloyd baseline, and spherical comparisons should be read against it. scikit-learn has no spherical mode: `sklearn-lloyd` runs Euclidean Lloyd on the unit-norm rows and projects its final centroids to unit length once, after training, so it is scored on the sphere but is not spherical Lloyd (no projection per iteration). The Cohere file's rows are not unit-norm (raw L2 norms about 12 to 17.5): the harness normalises every row to unit length when it loads them. Random data is Euclidean and is for speed only: Gaussian noise has no cluster structure.
-- The real 100k set is a seeded, sorted random subset of the 1M Cohere rows: seed 20261105 (`COHERE_SUBSET_SEED` in `data.py`), row-index sha256 `19fd6db7de0e1f3c90a6bf0a4ad6e370a4a92fe07bbaa17b590018286ca6ac72`. The records published here do not carry the subset seed, row-index sha256 or raw norm range per record; records written by later runs do.
+- The real 100k set is a seeded, sorted random subset of the 1M Cohere rows: seed 20261105 (`COHERE_SUBSET_SEED` in `data.py`), row-index sha256 `19fd6db7de0e1f3c90a6bf0a4ad6e370a4a92fe07bbaa17b590018286ca6ac72`. Per record, 216 of the 594 real-data speed records carry the subset seed, row-index sha256 and raw norm range (`emeans-gpu-triton-bf16`, `emeans-gpu-triton-fp32`), and so do all 48 precision records. The `emeans-cpu`, `emeans-gpu-native-fp32`, `faiss-lloyd`, `sklearn-lloyd` records predate these fields.
 - Cold: the first run in a fresh process, including the backend probe and Triton JIT with the persistent Triton cache (recorded per row). Warm: a repeat in the same process. Host-to-device transfer is timed separately and subtracted; GPU end-to-end below adds it back.
 - Time cap: a cell whose probe estimate exceeds the cap is listed as `not run: est. X h`, never dropped; a worker past its hard timeout is listed as `timed out after X h`.
 - 100k x 65536 is degenerate: about 1.5 points per centroid.
