@@ -163,6 +163,7 @@ hatch run gpu:run ../../examples/04_large_corpus_gpu.py        # or gpu-fork:run
 | [`integrations/emeans/`](integrations/emeans/) | The package, laid out to move unchanged into deepset-ai/haystack-core-integrations: `src/`, `tests/`, `pydoc/`, `pyproject.toml`, `CHANGELOG.md` |
 | [`benchmarks/`](benchmarks/) | Benchmark scripts with their own `pyproject.toml`, the grid runner, committed results and [`RESULTS.md`](benchmarks/RESULTS.md) |
 | [`examples/`](examples/) | Runnable pipelines built on the components |
+| [`hayhooks-smoke/`](hayhooks-smoke/) | Local smoke test that serves the clusterer and ranker with Hayhooks on CPU, with its own `pyproject.toml` |
 | [`UPSTREAM.md`](UPSTREAM.md) | Hand-off checklist and draft proposal for the upstream move |
 | [`.github/workflows/emeans.yml`](.github/workflows/emeans.yml) | The CI workflow |
 | [`LICENSE`](LICENSE) | Apache-2.0 |
@@ -184,6 +185,22 @@ GPU tests are marked `integration` and `gpu`, so `hatch run test:unit` and CI ne
 `hatch run gpu:gpu-tests` (upstream e-means) or `hatch run gpu-fork:gpu-tests` (installs `emeans-rocm` 0.2.6 from
 PyPI). They skip when PyTorch sees no GPU. The `gpu` env installs an exact ROCm build of torch from AMD's index; the
 comment above `[tool.hatch.envs.gpu]` in `integrations/emeans/pyproject.toml` records the accepted risk of that setup.
+
+### Hayhooks smoke test
+
+`hayhooks-smoke/` checks that `EmeansDocumentClusterer` and `EmeansClusterRanker` work when served by Hayhooks 2.5.0
+on CPU. It fits a small model on synthetic embeddings, starts a local Hayhooks server on a free `127.0.0.1` port,
+deploys both components as pipeline wrappers that rebuild the pipeline with `Pipeline.loads()` (so `to_dict` and
+`from_dict` are exercised), calls the run endpoints over HTTP and asserts that `cluster_id` comes back as a JSON
+integer and that the ranker returns one best document per cluster. The wrappers are used because the YAML endpoint of
+Hayhooks 2.5.0 passes `list[Document]` inputs to components as plain dicts. It is local only, not part of CI, and
+downloads no model. It lives outside `integrations/emeans/` so the integration stays a clean copy for the upstream move.
+
+```bash
+cd hayhooks-smoke
+hatch run smoke
+hatch run lint
+```
 
 ## CI
 
