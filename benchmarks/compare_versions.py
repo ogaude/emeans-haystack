@@ -51,10 +51,13 @@ def load_run_records(directory: Path, expected_source: str) -> list[dict[str, An
     :param directory: Directory holding the worker output lines in `records.jsonl`.
     :param expected_source: The exact `emeans_source` label every record must carry.
     :returns: The records.
-    :raises SystemExit: With code 2 when a record has another label.
+    :raises SystemExit: With code 2 when the file holds no record or a record has another label.
     """
     path = directory / "records.jsonl"
     records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    if not records:
+        sys.stderr.write(f"{path}: no records, so its engine version cannot be checked\n")
+        raise SystemExit(2)
     for record in records:
         source = record.get("versions", {}).get("emeans_source")
         if source != expected_source:

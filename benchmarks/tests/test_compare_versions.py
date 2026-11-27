@@ -59,6 +59,14 @@ def test_load_run_records_rejects_other_source(tmp_path: Path, capsys: pytest.Ca
     assert cv.load_run_records(tmp_path, cv.NEW_SOURCE)[0]["method"] == METHOD
 
 
+def test_load_run_records_rejects_empty_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "records.jsonl").write_text("\n")
+    with pytest.raises(SystemExit) as exc:
+        cv.load_run_records(tmp_path, cv.OLD_SOURCE)
+    assert exc.value.code == 2
+    assert "no records" in capsys.readouterr().err
+
+
 def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, new_shift: float) -> list[str]:
     n, d, k = 200, 8, 4
     rng = np.random.default_rng(0)
