@@ -68,8 +68,8 @@ STATIC_CUTS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         (
-            "Precision guidance: option B (owner, 2026-11-23); the 6 random-data spike contradictions of the 0.2.6 "
-            "records are accepted as known (owner, 2026-11-27; the 4 of the 0.2.5 records were accepted on 2026-11-23)"
+            "Precision guidance: option B (owner, 2026-11-23); the random-data spike contradictions of the 0.2.6 "
+            "records were accepted by the owner on 2026-11-27 (those of the 0.2.5 records on 2026-11-23)"
         ),
         (
             "on random data FP16/BF16 drift equals or slightly exceeds the FP32 other-seed drift; the guidance adds "
@@ -154,6 +154,17 @@ VERSION_ARI_CUT: tuple[str, str, str] = (
         "assignment agreement at 1M rows, at k = 16384 and 65536 and on sweep cells; objectives and times are "
         "compared on all 186 Triton cells"
     ),
+)
+
+# Owner history, shown only while the records match it (report.py checks the counts): the number of spike
+# contradictions in the 0.2.6 precision records the owner accepted on 2026-11-27, and the smoke-gate outcome
+# (settings, settings passing the objective part, settings passing the ARI part) the owner overrode on 2026-11-27.
+ACCEPTED_CONTRADICTIONS_026 = 6
+VERSION_GATE_RECORDED = (8, 5, 8)
+
+VERSION_GATE_UNMATCHED = (
+    "Gate history: the smoke gate run before the full 0.2.6 rerun failed (exit 3) and was overridden by the owner on "
+    "2026-11-27. The ARI records given here do not match that run's outcome, so its details are not repeated."
 )
 
 VERSION_GATE_NOTE = (

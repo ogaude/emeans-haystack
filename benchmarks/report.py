@@ -617,13 +617,23 @@ def render_precision(records: list[dict[str, Any]]) -> list[str]:
     if contradictions:
         out += ["Spike check: results contradict the Phase 2 spike; reported as measured, guidance not changed:", ""]
         out += [f"- {m}" for m in contradictions]
+        if len(contradictions) == notes.ACCEPTED_CONTRADICTIONS_026:
+            history = (
+                f"These {len(contradictions)} contradictions of the 0.2.6 records were accepted by the owner on "
+                "2026-11-27 (those of the 0.2.5 records on 2026-11-23), who kept option B: the caution above, no "
+                "other change to the precision guidance."
+            )
+        else:
+            history = (
+                f"These {len(contradictions)} contradictions have not been reviewed by the owner: the acceptance of "
+                f"2026-11-27 covered {notes.ACCEPTED_CONTRADICTIONS_026} contradictions of the 0.2.6 records. The "
+                "guidance is still option B (owner, 2026-11-23): the caution above."
+            )
         out += [
             "",
             (
                 "Each contradiction is a reduced-precision drift equal to or slightly above the FP32 other-seed drift "
-                f"({_spike_values(records)}). The owner accepted the {len(contradictions)} contradictions of the "
-                "0.2.6 records as known on 2026-11-27 (the 4 of the 0.2.5 records on 2026-11-23) and kept option B: "
-                "the caution above, no other change to the precision guidance."
+                f"({_spike_values(records)}). {history}"
             ),
             "",
         ]
@@ -1680,7 +1690,9 @@ def version_comparison(
             + f". The smoke gate passed its objective part in {n_obj} of {len(ari)} settings and its ARI part in "
             f"{n_ari} of {len(ari)}."
         )
-    out += ["", notes.VERSION_GATE_NOTE, "", notes.VERSION_CENTROIDS_NOTE, "", notes.VERSION_TIME_NOTE, ""]
+    counts = (len(ari), sum(1 for a in ari if a.get("ok_objective")), sum(1 for a in ari if a.get("ok_ari")))
+    gate_note = notes.VERSION_GATE_NOTE if counts == notes.VERSION_GATE_RECORDED else notes.VERSION_GATE_UNMATCHED
+    out += ["", gate_note, "", notes.VERSION_CENTROIDS_NOTE, "", notes.VERSION_TIME_NOTE, ""]
     return out
 
 

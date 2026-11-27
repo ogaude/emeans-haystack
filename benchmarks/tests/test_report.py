@@ -512,6 +512,29 @@ def test_version_comparison_differs() -> None:
     assert "largest main-cell objective difference is fp32 " in text
 
 
+def test_version_gate_note_only_with_matching_counts() -> None:
+    old, new = _version_records(130.0)
+    differs = "\n".join(report.version_comparison(new, old, [], [], [_ari(ok=False)]))
+    assert report.notes.VERSION_GATE_NOTE not in differs
+    assert report.notes.VERSION_GATE_UNMATCHED in differs
+    recorded = [_ari(ok_objective=i < 5) for i in range(8)]
+    matched = "\n".join(report.version_comparison(new, old, [], [], recorded))
+    assert "objective part in 5 of 8 settings and its ARI part in 8 of 8" in matched
+    assert report.notes.VERSION_GATE_NOTE in matched
+    assert report.notes.VERSION_GATE_UNMATCHED not in matched
+
+
+def test_spike_acceptance_only_with_matching_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    records = [prec(0, reduced_gap=0.9)]
+    found = len(report.spike_contradictions(records))
+    other = "\n".join(report.render_precision(records))
+    assert f"These {found} contradictions have not been reviewed by the owner" in other
+    assert "were accepted by the owner" not in other
+    monkeypatch.setattr(report.notes, "ACCEPTED_CONTRADICTIONS_026", found)
+    same = "\n".join(report.render_precision(records))
+    assert f"These {found} contradictions of the 0.2.6 records were accepted by the owner on 2026-11-27" in same
+
+
 def test_version_comparison_objective_failure_is_not_an_ari_failure() -> None:
     old, new = _version_records(130.0)
     text = "\n".join(report.version_comparison(new, old, [], [], [_ari(ok=True, ok_objective=False)]))
