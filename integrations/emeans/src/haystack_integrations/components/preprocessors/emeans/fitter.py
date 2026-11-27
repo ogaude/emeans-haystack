@@ -281,6 +281,7 @@ class EmeansFitter:
             "alpha0": info["alpha0"],
             "n_splits": info["n_splits"],
             "imbalance": info["imbalance"],
+            "unused_threshold": info["unused_threshold"],
             "train_seconds": info["train_seconds"],
         }
         logger.info(

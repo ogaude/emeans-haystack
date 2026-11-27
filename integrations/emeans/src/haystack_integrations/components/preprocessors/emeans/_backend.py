@@ -256,6 +256,22 @@ _PROBE_ROWS = 1024
 _PROBE_DIM = 64
 _PROBE_K = 16
 
+# Mirror faiss.contrib.e_means.base: stock faiss 1.16 and emeans-rocm 0.2.5 resolve `unused_threshold=None` to
+# these values (mass-based revival); emeans-rocm 0.2.6 resolves `None` to cost-based revival instead, so the value
+# is always passed explicitly.
+_UNUSED_THRESHOLD = 0.1
+_NO_REVIVAL_MAX_D = 2
+
+
+def _unused_threshold(d: int) -> float:
+    """
+    Return the revival threshold passed to every e-means engine constructor.
+
+    :param d: Embedding dimension.
+    :returns: `0.0` (no revival) for `d <= 2`, otherwise `0.1` (mass-based revival).
+    """
+    return 0.0 if d <= _NO_REVIVAL_MAX_D else _UNUSED_THRESHOLD
+
 
 def _run_probe(requested: str, precision: str, engine: str | None = None) -> ProbeResult:
     # Both spherical modes are probed: e-means takes mode-dependent code paths, and the verdict is reused for
@@ -282,6 +298,7 @@ def _run_probe(requested: str, precision: str, engine: str | None = None) -> Pro
                 "spherical": spherical,
                 "capture_assignments": False,
                 "assignment_backend": requested,
+                "unused_threshold": _unused_threshold(_PROBE_DIM),
             }
             if precision == "fp32":
                 em = e_means.QuantizedEmeans(_PROBE_DIM, _PROBE_K, quantizer=None, **kwargs)
@@ -834,6 +851,7 @@ def _fit_cpu(
         spherical=spherical,
         max_points_per_centroid=max_points_per_centroid,
         capture_assignments=False,
+        unused_threshold=_unused_threshold(d),
     )
     start = time.perf_counter()
     centroids, _ = em.train(x, init_centroids=init_centroids)
@@ -856,6 +874,7 @@ def _fit_cpu(
         "alpha0": float(recipe["alpha0"]),
         "n_splits": int(em.n_splits),
         "imbalance": imbalance,
+        "unused_threshold": _unused_threshold(d),
         "backend_hint": None,
         "memory_estimate_bytes": None,
         "fallback_reason": backend.fallback_reason,
@@ -988,6 +1007,7 @@ def _fit_gpu(
             max_points_per_centroid=max_points_per_centroid,
             capture_assignments=False,
             assignment_backend=backend.requested,
+            unused_threshold=_unused_threshold(d),
             **extra,
         )
         # bf16 runs pass float32 rows to an automatic Emeans, which memory_estimate costs as the BF16 cast.
@@ -1064,6 +1084,7 @@ def _fit_gpu(
             "alpha0": _number(recipe.get("alpha0"), float, None),
             "n_splits": _number(getattr(em, "n_splits", None), int, None),
             "imbalance": imbalance,
+            "unused_threshold": _unused_threshold(d),
             "backend_hint": _backend_hint(
                 is_rocm=torch.version.hip is not None,
                 assignment_backend=label,
@@ -1099,7 +1120,7 @@ class _CpuAssigner:
     def __init__(self, centroids: np.ndarray, *, spherical: bool) -> None:
         faiss_import.check()
         k, d = centroids.shape
-        self._em = NumpyEmeans(d, k, spherical=spherical)
+        self._em = NumpyEmeans(d, k, spherical=spherical, unused_threshold=_unused_threshold(d))
         self._em.centroids = centroids
 
     def assign(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -1126,7 +1147,14 @@ class _GpuAssigner:
         self._torch = importlib.import_module("torch")
         e_means = gpu_engine(engine)
         k, d = centroids.shape
-        self._em = e_means.QuantizedEmeans(d, k, spherical=spherical, quantizer=None, assignment_backend=requested)
+        self._em = e_means.QuantizedEmeans(
+            d,
+            k,
+            spherical=spherical,
+            quantizer=None,
+            assignment_backend=requested,
+            unused_threshold=_unused_threshold(d),
+        )
         self._em.centroids = self._torch.from_numpy(np.ascontiguousarray(centroids, dtype=np.float32)).to("cuda")
 
     def assign(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

@@ -335,9 +335,7 @@ def test_cpu_constructors_get_the_unused_threshold(
     x = np.random.default_rng(0).normal(size=(40, d)).astype(np.float32)
     if spherical:
         x /= np.linalg.norm(x, axis=1, keepdims=True)
-    result = fit_model(
-        x, k=3, spherical=spherical, nepochs=1.0, seed=0, max_points_per_centroid=None, backend=CPU
-    )
+    result = fit_model(x, k=3, spherical=spherical, nepochs=1.0, seed=0, max_points_per_centroid=None, backend=CPU)
     _backend.cpu_assigner(np.asarray(result.centroids, dtype=np.float32), spherical=spherical)
     assert len(seen) == 2
     assert all(kwargs["unused_threshold"] == expected for kwargs in seen)

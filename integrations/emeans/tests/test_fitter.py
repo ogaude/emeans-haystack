@@ -160,7 +160,7 @@ class TestStats:
     def test_keys_and_types(self, tmp_path: Path, make_docs: MakeDocs) -> None:
         stats = make_fitter(tmp_path).run(documents=make_docs(50))["stats"]
         assert set(stats) == STATS_KEYS
-        assert len(stats) == 20
+        assert len(stats) == 21
         for key, expected in STATS_TYPES.items():
             assert type(stats[key]) is expected, key
         assert stats["fallback_reason"] is None
