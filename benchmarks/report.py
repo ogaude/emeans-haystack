@@ -1864,8 +1864,10 @@ def render(
     if fork_speed is not None and fork_precision is not None:
         lines += fork_comparison(records, fork_speed, precision_records or [], fork_precision)
     compare_versions = prev_speed is not None and prev_precision is not None and version_ari is not None
-    if prev_speed is not None and prev_precision is not None and version_ari is not None:
-        lines += version_comparison(records, prev_speed, precision_records or [], prev_precision, version_ari)
+    if compare_versions:
+        lines += version_comparison(
+            records, prev_speed or [], precision_records or [], prev_precision or [], version_ari or []
+        )
     lines += ["## Pass sweep", ""]
     lines += _sweep_tables(rows) or ["No sweep records.", ""]
     lines += _render_cuts(records, rows, reaches, extra_cuts=(notes.VERSION_ARI_CUT,) if compare_versions else ())
@@ -1978,6 +1980,14 @@ def main() -> int:
             for message in contradictions:
                 sys.stdout.write(message + "\n")
         return 1 if problems or contradictions else 0
+    version_flags = {"--prev-speed": args.prev_speed, "--prev-precision": args.prev_precision}
+    version_flags["--version-ari"] = args.version_ari
+    given = [flag for flag, value in version_flags.items() if value]
+    if given and len(given) < len(version_flags):
+        missing = ", ".join(flag for flag in version_flags if flag not in given)
+        sys.stderr.write(
+            f"warning: {', '.join(given)} given without {missing}; the 0.2.5 vs 0.2.6 comparison is left out\n"
+        )
     out.parent.mkdir(parents=True, exist_ok=True)
     fork_speed = load_records(args.fork_speed) if args.fork_speed else None
     fork_precision = load_records(args.fork_precision) if args.fork_precision else None

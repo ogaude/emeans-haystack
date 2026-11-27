@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -584,3 +585,17 @@ def test_render_version_comparison_lists_ari_cut() -> None:
     )
     assert "### emeans-rocm 0.2.5 vs 0.2.6" in text
     assert report.notes.VERSION_ARI_CUT[0] in text
+
+
+def test_main_warns_on_partial_version_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    speed = tmp_path / "speed.jsonl"
+    speed.write_text(json.dumps(rec("emeans-cpu", 0, 1.0, 1.0)) + "\n")
+    out = tmp_path / "RESULTS.md"
+    argv = ["report", "--results", str(speed), "--out", str(out), "--precision", str(tmp_path / "none.jsonl")]
+    monkeypatch.setattr("sys.argv", [*argv, "--prev-speed", str(speed)])
+    assert report.main() == 0
+    err = capsys.readouterr().err
+    assert "--prev-speed given without --prev-precision, --version-ari" in err
+    assert "0.2.5 vs 0.2.6" not in out.read_text()
