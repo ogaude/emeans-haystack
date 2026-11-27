@@ -711,7 +711,7 @@ GPU_CHOICE = BackendChoice("nvidia-triton", "Fake GPU", None, requested="triton"
 PREFLIGHT_STATS_KEYS = {
     "k", "d", "n_documents", "n_skipped", "n_train", "spherical", "backend", "assignment_backend", "device_name",
     "precision_used", "fallback_reason", "memory_estimate_bytes", "emeans_source", "faiss_version", "nepochs",
-    "batch_size", "alpha0", "n_splits", "imbalance", "train_seconds",
+    "batch_size", "alpha0", "n_splits", "imbalance", "train_seconds", "unused_threshold",
 }  # fmt: skip
 
 
@@ -1035,6 +1035,37 @@ def test_all_gpu_sites_use_the_selected_engine(
     FakeEngine.instances = []
     _backend.assigner_for(GPU_CHOICE, np.eye(3, 8, dtype=np.float32), spherical=True)
     assert engines_built() == {engine}
+
+
+@pytest.mark.parametrize("d", [2, 3], ids=["d2", "d3"])
+@pytest.mark.parametrize("precision", ["fp32", "bf16"])
+@pytest.mark.parametrize(("installed", "engine"), [("0.2.5", RocmEngine), (False, StockEngine)], ids=["rocm", "stock"])
+def test_every_engine_constructor_gets_the_unused_threshold(
+    monkeypatch: pytest.MonkeyPatch, installed: str | bool, engine: type[FakeEngine], precision: str, d: int
+) -> None:
+    """The probe, the GPU fit and the GPU assigner all pass the mass-based revival threshold (0.0 at d <= 2).
+
+    The assigners never read the threshold (`assign()` ignores it); they get it only so that every constructor
+    applies the same rule.
+    """
+    expected = 0.0 if d <= 2 else 0.1
+    FakeGpu(monkeypatch, emeans_rocm=installed)
+
+    assert _backend._run_probe("auto", precision).ok
+    assert engines_built() == {engine}
+    assert FakeEngine.instances
+    assert all(e.kwargs["unused_threshold"] == 0.1 for e in FakeEngine.instances)
+
+    FakeEngine.instances = []
+    run_fit(d=d, allow_cpu_fallback=False, precision=precision)
+    built = [e for e in FakeEngine.instances if e.d == d]
+    assert built
+    assert all(e.kwargs["unused_threshold"] == expected for e in built)
+
+    FakeEngine.instances = []
+    _backend.assigner_for(GPU_CHOICE, np.eye(3, d, dtype=np.float32), spherical=True)
+    assert FakeEngine.instances
+    assert all(e.kwargs["unused_threshold"] == expected for e in FakeEngine.instances)
 
 
 @pytest.mark.parametrize("is_rocm", [True, False], ids=["amd", "nvidia"])

@@ -308,8 +308,40 @@ def test_fit_model_info_plain_types() -> None:
         "imbalance": float,
         "train_seconds": float,
         "n_train": int,
+        "unused_threshold": float,
     }.items():
         assert type(info[key]) is expected, key
+
+
+@pytest.mark.parametrize(("d", "expected"), [(1, 0.0), (2, 0.0), (3, 0.1), (768, 0.1)])
+def test_unused_threshold_helper(d: int, expected: float) -> None:
+    assert _backend._unused_threshold(d) == expected
+    assert type(_backend._unused_threshold(d)) is float
+
+
+@pytest.mark.parametrize("spherical", [True, False])
+@pytest.mark.parametrize(("d", "expected"), [(2, 0.0), (3, 0.1)])
+def test_cpu_constructors_get_the_unused_threshold(
+    monkeypatch: pytest.MonkeyPatch, d: int, expected: float, spherical: bool
+) -> None:
+    seen: list[dict[str, object]] = []
+
+    class Spy(_backend.NumpyEmeans):  # type: ignore[misc,name-defined]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            seen.append(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(_backend, "NumpyEmeans", Spy)
+    x = np.random.default_rng(0).normal(size=(40, d)).astype(np.float32)
+    if spherical:
+        x /= np.linalg.norm(x, axis=1, keepdims=True)
+    result = fit_model(
+        x, k=3, spherical=spherical, nepochs=1.0, seed=0, max_points_per_centroid=None, backend=CPU
+    )
+    _backend.cpu_assigner(np.asarray(result.centroids, dtype=np.float32), spherical=spherical)
+    assert len(seen) == 2
+    assert all(kwargs["unused_threshold"] == expected for kwargs in seen)
+    assert result.info["unused_threshold"] == expected
 
 
 @pytest.mark.parametrize("stats", [[], [{}]])

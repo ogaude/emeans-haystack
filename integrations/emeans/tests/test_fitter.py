@@ -39,6 +39,7 @@ STATS_TYPES: dict[str, type] = {
     "n_splits": int,
     "imbalance": float,
     "train_seconds": float,
+    "unused_threshold": float,
 }
 STATS_KEYS = {*STATS_TYPES, "fallback_reason", "memory_estimate_bytes"}
 
