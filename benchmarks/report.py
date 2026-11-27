@@ -1617,6 +1617,7 @@ def version_comparison(
     ari_by_cell: dict[tuple, dict[str, Any]] = {(a["method"], a["data"], a["n"], a["k"]): a for a in ari}
     outside: list[str] = []
     largest: dict[str, float] = {}
+    seed_counts: set[int] = set()
     if pairs:
         warm = [b["seconds"] / a["seconds"] for a, b in pairs if a["timing"] == "warm" and a["seconds"]]
         cold = [b["seconds"] / a["seconds"] for a, b in pairs if a["timing"] == "cold" and a["seconds"]]
@@ -1658,6 +1659,7 @@ def version_comparison(
             if a["seconds"]:
                 groups[cell]["w" if a["timing"] == "warm" else "c"].append(b["seconds"] / a["seconds"])
         body = []
+        seed_counts = {len(g["old"]) for g in groups.values() if g["old"]}
         for cell, g in sorted(groups.items(), key=lambda kv: str(kv[0])):
             method, data, n, k, kind, passes = cell
             if not g["old"]:
@@ -1741,12 +1743,13 @@ def version_comparison(
             "given, so assignment agreement is not evaluated."
         )
     else:
+        seeds = f"{next(iter(seed_counts))} seeds" if len(seed_counts) == 1 else "seeds"
         listed = "; ".join(outside[:VERSION_LISTED]) + (" and more" if len(outside) > VERSION_LISTED else "")
         n_obj = sum(1 for a in ari if a.get("ok_objective"))
         n_ari = sum(1 for a in ari if a.get("ok_ari"))
         spread = ", ".join(f"{v} {x:.3f} %" for v, x in sorted(largest.items()))
         out.append(
-            f"emeans-rocm 0.2.6 has a median objective outside the min-max of the 3 seeds of 0.2.5 of the same cell "
+            f"emeans-rocm 0.2.6 has a median objective outside the min-max of the {seeds} of 0.2.5 of the same cell "
             f"in {len(outside)} cells"
             + (f" ({listed})" if outside else "")
             + (f"; the largest main-cell objective difference is {spread}" if spread else "")

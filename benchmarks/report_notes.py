@@ -152,7 +152,7 @@ VERSION_ARI_CUT: tuple[str, str, str] = (
     ),
     (
         "assignment agreement at 1M rows, at k = 16384 and 65536 and on sweep cells; objectives and times are "
-        "compared on all 186 Triton cells"
+        "compared on all 62 Triton cells x 3 seeds (186 cell-seed runs per timing)"
     ),
 )
 

@@ -509,6 +509,8 @@ def test_version_comparison_differs() -> None:
     old, new = _version_records(130.0)
     text = "\n".join(report.version_comparison(new, old, [], [], [_ari(ok=False)]))
     assert "outside the min-max of the 3 seeds of 0.2.5 of the same cell in 1 cells" in text
+    two = "\n".join(report.version_comparison(new[:4], old[:4], [], [], [_ari(ok=False)]))
+    assert "outside the min-max of the 2 seeds of 0.2.5" in two
     assert "its ARI part in 0 of 1" in text
     assert "largest main-cell objective difference is fp32 " in text
 
