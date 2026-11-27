@@ -44,6 +44,7 @@ _INFO_KEYS = (
     "nepochs",
     "batch_size",
     "recipe",
+    "unused_threshold",
 )
 _GPU_INFO_KEYS = (*_INFO_KEYS, "device_name", "assignment_backend")
 

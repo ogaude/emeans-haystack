@@ -59,7 +59,9 @@ def test_cell_data_prep(monkeypatch: pytest.MonkeyPatch) -> None:
     assert np.array_equal(x, unit)
 
 
-def _fake_fit(*, fallback: bool = False, nonfinite: bool = False, source: str | None = None) -> Any:
+def _fake_fit(
+    *, fallback: bool = False, nonfinite: bool = False, source: str | None = None, unused_threshold: float | None = None
+) -> Any:
     def fit(x: np.ndarray, init: np.ndarray, *, k: int, spherical: bool, seed: int, precision: str) -> Any:  # noqa: ARG001
         c = init.astype(np.float32) + (0.001 * (seed + 1)) * np.ones_like(init)
         if precision != "fp32":
@@ -71,6 +73,8 @@ def _fake_fit(*, fallback: bool = False, nonfinite: bool = False, source: str | 
         info = {"precision_used": used, "backend": "fake", "train_seconds": 0.5}
         if source is not None:
             info["emeans_source"] = source
+        if unused_threshold is not None:
+            info["unused_threshold"] = unused_threshold
         return c, info
 
     return fit
@@ -188,6 +192,15 @@ def test_precision_variant_carries_engine_label() -> None:
     assert record["variants"]["round16"]["emeans_source"] is None
     record = run_cell(_cell(), fit=_fake_fit(), d=16)
     assert record["variants"]["fp16"]["emeans_source"] is None
+
+
+def test_precision_variant_carries_unused_threshold() -> None:
+    record = run_cell(_cell(), fit=_fake_fit(unused_threshold=0.1), d=16)
+    for name in ("fp32_rerun", "fp32_other_seed", "fp16", "bf16"):
+        assert record["variants"][name]["unused_threshold"] == 0.1
+    assert record["variants"]["round16"]["unused_threshold"] is None
+    record = run_cell(_cell(), fit=_fake_fit(), d=16)
+    assert record["variants"]["fp16"]["unused_threshold"] is None
 
 
 def test_precision_record_versions_follow_variant(monkeypatch: pytest.MonkeyPatch) -> None:

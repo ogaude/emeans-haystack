@@ -4,6 +4,7 @@
 
 import numpy as np
 
+import methods
 from methods import METHODS
 
 
@@ -24,3 +25,14 @@ def test_sklearn_euclidean_centroids_are_plain_means() -> None:
     result = METHODS["sklearn-lloyd"].train(x, x[:8].copy(), k=8, spherical=False, seed=0, passes=3)
     assert np.all(np.linalg.norm(result.centroids, axis=1) < 1.0)
     assert result.info["centroids_normalised"] is False
+
+
+def test_emeans_cpu_info_carries_unused_threshold() -> None:
+    x = _unit_rows(400, 16, 0)
+    result = METHODS["emeans-cpu"].train(x, x[:8].copy(), k=8, spherical=True, seed=0, passes=1)
+    assert result.info["unused_threshold"] == 0.1
+
+
+def test_gpu_info_keys_include_unused_threshold() -> None:
+    assert "unused_threshold" in methods._INFO_KEYS
+    assert "unused_threshold" in methods._GPU_INFO_KEYS

@@ -195,6 +195,7 @@ def _variant(
         "precision_used": used,
         "backend": info.get("backend"),
         "emeans_source": info.get("emeans_source"),
+        "unused_threshold": info.get("unused_threshold"),
         "train_seconds": info.get("train_seconds"),
     }
     if not finite:
