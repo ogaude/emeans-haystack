@@ -42,9 +42,11 @@ stock faiss-cpu e-means engine is tried on the GPU in native FP32 before falling
 `stats["emeans_source"]` names the package and version that ran, for example `"emeans-rocm 0.2.5"` or
 `"faiss-cpu 1.16.0"`, and `stats["backend"]` which backend ran.
 
-emeans-rocm 0.2.6 and later revive unused clusters by cost by default (`unused_threshold=None`), so their centroids
-differ from those of 0.2.5; this package passes no `unused_threshold`. The benchmark figures below are for emeans-rocm
-0.2.5.
+The package passes `unused_threshold=0.1` (`0.0` when d <= 2) to every e-means engine, so it keeps mass-based
+revival of unused clusters, the rule of stock faiss and emeans-rocm 0.2.5, also on emeans-rocm 0.2.6, whose default is
+cost-based revival; `stats["unused_threshold"]` reports the value used. emeans-rocm 0.2.6 places revived centroids
+differently (along the donor cluster's long axis), so GPU centroids at d > 2 differ slightly from those of 0.2.5, while
+CPU fits and the stock faiss-cpu engine are unchanged. The benchmark figures below are for emeans-rocm 0.2.5.
 
 Importing the package never imports PyTorch. PyTorch is loaded only when a GPU backend is considered.
 
