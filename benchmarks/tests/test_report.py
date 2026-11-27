@@ -542,6 +542,28 @@ def test_version_comparison_objective_failure_is_not_an_ari_failure() -> None:
     assert "ARI settings fail" not in text
 
 
+def test_ari_baseline_uses_same_seed_rerun() -> None:
+    bf16 = "emeans-gpu-triton-bf16"
+    records = [
+        {**_ari(), "method": bf16, "data": "cohere", "ari_new_old_median": 0.27, "ari_old_seeds_median": 0.25,
+         "ari_old_rerun": 1.0},
+        {**_ari(), "method": bf16, "data": "cohere", "k": 4096, "ari_new_old_median": 0.40,
+         "ari_old_seeds_median": 0.39, "ari_old_rerun": 1.0},
+        {**_ari(), "method": TRITON, "data": "cohere", "ari_old_rerun": 0.45},
+        {**_ari(), "data": "random", "ari_new_old_median": 0.0005, "ari_old_seeds_median": 0.0004,
+         "ari_old_rerun": 0.0005},
+    ]  # fmt: skip
+    text = report._ari_baseline(records)
+    assert "bf16 0.2.5 reruns are deterministic (ARI 1.0)" in text
+    assert "fp32 0.2.5 reruns are not reproducible (same-seed ARI 0.0005-0.4500)" in text
+    assert "On cohere, 0.2.6 against 0.2.5 at the same seed gives an ARI of 0.27-0.92" in text
+    assert "On random data (no cluster structure) the ARI between versions and between seeds is 0.0004-0.0005" in text
+    assert "kept as run" in text
+    old, new = _version_records(100.0)
+    section = "\n".join(report.version_comparison(new, old, [], [], records))
+    assert text in section
+
+
 def test_version_comparison_off_by_default() -> None:
     text = render(_full(), precision_records=[prec(0)])
     assert "0.2.5 vs 0.2.6" not in text

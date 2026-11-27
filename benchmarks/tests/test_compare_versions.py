@@ -104,7 +104,17 @@ def test_main_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pyte
     record = json.loads(lines[0])
     assert record["ok"] is True
     assert len(record["old_objectives"]) == 7
-    assert "STOP" not in capsys.readouterr().out
+    assert record["ari_old_rerun"] == 1.0
+    out = capsys.readouterr().out
+    assert "ARI 0.2.5 rerun (not gating)" in out
+    assert "STOP" not in out
+
+
+def test_gate_ignores_rerun_ari() -> None:
+    # R-02 as committed: only the seed-to-seed ARI gates, so a same-seed rerun ARI of 1.0 cannot fail the setting.
+    g = cv.gate_setting([1.0, 1.2], [1.1], [0.3], [0.25])
+    assert g["ok_ari"] is True
+    assert "ari_old_rerun" not in g
 
 
 def test_main_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

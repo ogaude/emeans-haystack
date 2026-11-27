@@ -1544,6 +1544,52 @@ def _spread(values: list[float]) -> str:
     return f"{statistics.median(values):.2f} [{min(values):.2f}-{max(values):.2f}]"
 
 
+RESEED_LEVEL = 0.05  # ARI between versions within this of the ARI between seeds reads as "about a reseed"
+
+
+def _range(values: list[float], digits: int = 2) -> str:
+    lo, hi = min(values), max(values)
+    return f"{lo:.{digits}f}" if f"{lo:.{digits}f}" == f"{hi:.{digits}f}" else f"{lo:.{digits}f}-{hi:.{digits}f}"
+
+
+def _ari_baseline(ari: list[dict[str, Any]]) -> str:
+    """
+    Explain the weak baseline of the R-02 ARI part and set the ARI between versions against the same-seed rerun.
+
+    :param ari: Records of `compare_versions.py`.
+    :returns: One paragraph; the gate rule and its result are reported as run, not re-evaluated.
+    """
+    text = (
+        "Baseline of the ARI part: the gate compared the ARI between versions at the same seed with the ARI between "
+        "different 0.2.5 seeds. That baseline is weak: fits from one seed share their starting centroids, so the "
+        "comparison leans towards passing, and a version change that moves assignments as much as a reseed still "
+        "passes. The fair baseline is the same-seed 0.2.5 rerun (`ARI 0.2.5 rerun`)."
+    )
+    for precision_name in sorted({str(a["method"]).removeprefix(TRITON_PREFIX) for a in ari}):
+        reruns = [a["ari_old_rerun"] for a in ari if str(a["method"]).removeprefix(TRITON_PREFIX) == precision_name]
+        if min(reruns) == 1.0:
+            text += f" {precision_name} 0.2.5 reruns are deterministic (ARI 1.0)."
+        else:
+            text += f" {precision_name} 0.2.5 reruns are not reproducible (same-seed ARI {_range(reruns, 4)})."
+    for data in sorted({a["data"] for a in ari if a["data"] != "random"}):
+        sel = [a for a in ari if a["data"] == data]
+        between = [a["ari_new_old_median"] for a in sel]
+        seeds = [a["ari_old_seeds_median"] for a in sel]
+        level = abs(statistics.median(between) - statistics.median(seeds)) <= RESEED_LEVEL
+        text += (
+            f" On {data}, 0.2.6 against 0.2.5 at the same seed gives an ARI of {_range(between)}, "
+            + ("about the agreement of a reseed" if level else "against")
+            + f" ({_range(seeds)} between 0.2.5 seeds)."
+        )
+    noise = [v for a in ari if a["data"] == "random" for v in (a["ari_new_old_median"], a["ari_old_seeds_median"])]
+    if noise:
+        text += (
+            f" On random data (no cluster structure) the ARI between versions and between seeds is {_range(noise, 4)}, "
+            "chance level, so the ARI part compares noise there."
+        )
+    return text + " The gate rule and its committed result (R-02) are kept as run."
+
+
 def version_comparison(
     speed: list[dict[str, Any]],
     prev_speed: list[dict[str, Any]],
@@ -1636,6 +1682,7 @@ def version_comparison(
                 for a in ari
             ],
         )  # fmt: skip
+        out += [_ari_baseline(ari), ""]
     now_p = {r["key"]: r for r in precision if r.get("status") == "ok"}
     p_pairs = [(r, now_p[r["key"]]) for r in prev_precision if r.get("status") == "ok" and r.get("key") in now_p]
     if p_pairs:

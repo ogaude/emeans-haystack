@@ -25,6 +25,9 @@ BENCH_DIR = Path(__file__).resolve().parent
 # The gate tolerance is fixed here, before any 0.2.6 run, and is not tuned afterwards:
 # a setting passes when the 0.2.6 median objective lies inside the min-max of the 0.2.5 objectives
 # AND the median ARI(0.2.6, 0.2.5) is at least the median ARI between 0.2.5 seeds.
+# Known weakness, kept as committed (R-02, owner 2026-11-27): ARI(0.2.6, 0.2.5) pairs fits from the same seed and
+# starting centroids, the seed-to-seed ARI pairs different starts, so the ARI part leans towards passing. The
+# like-for-like baseline, the same-seed 0.2.5 rerun (`ari_old_rerun`), is recorded and printed but does not gate.
 GATE_METHODS = ("emeans-gpu-triton-fp32", "emeans-gpu-triton-bf16")
 GATE_DATA = ("random", "cohere")
 GATE_N = 100_000
@@ -86,7 +89,7 @@ def old_grid_objectives(path: Path, method: str, data: str, n: int, k: int) -> l
 def gate_setting(
     old_objectives: list[float], new_objectives: list[float], ari_new_old: list[float], ari_old_seeds: list[float]
 ) -> dict[str, Any]:
-    """Apply the R-02 gate to one setting; both comparisons are inclusive."""
+    """Apply the R-02 gate to one setting; both comparisons are inclusive. The same-seed rerun ARI does not gate."""
     lo, hi = min(old_objectives), max(old_objectives)
     new_median = statistics.median(new_objectives)
     ari_new_old_median = statistics.median(ari_new_old)
@@ -203,7 +206,7 @@ def main() -> int:
     out.write_text("".join(json.dumps(r) + "\n" for r in records))
     header = [
         "method", "data", "k", "0.2.5 objective range", "0.2.6 median", "ARI 0.2.6 vs 0.2.5",
-        "ARI 0.2.5 seeds", "ARI 0.2.5 rerun", "objective gate", "ARI gate",
+        "ARI 0.2.5 seeds", "ARI 0.2.5 rerun (not gating)", "objective gate", "ARI gate",
     ]  # fmt: skip
     table = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     table += ["| " + " | ".join(row) + " |" for row in rows]
