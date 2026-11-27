@@ -81,15 +81,12 @@ def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, new_shift: float) ->
         if seed == cv.RERUN_SEED:
             np.save(cv.centroid_path(rerun, METHOD, "random", n, k, seed), cent)
         obj = cv.score(x, cent)[0]
-        grid_lines.append(
-            json.dumps(
-                {
-                    "timing": "cold", "kind": "main", "passes_requested": None, "status": "ok", "method": METHOD,
-                    "data": "random", "n": n, "k": k, "seed": seed, "objective": obj,
-                    "versions": {"emeans_source": cv.OLD_SOURCE},
-                }
-            )  # fmt: skip
-        )
+        record = {
+            "timing": "cold", "kind": "main", "passes_requested": None, "status": "ok", "method": METHOD,
+            "data": "random", "n": n, "k": k, "seed": seed, "objective": obj,
+            "versions": {"emeans_source": cv.OLD_SOURCE},
+        }  # fmt: skip
+        grid_lines.append(json.dumps(record))
     records = tmp_path / "speed-old.jsonl"
     records.write_text("\n".join(grid_lines) + "\n")
     return [
