@@ -160,8 +160,12 @@ All numbers fetched 2026-11-26.
   `EmeansClusterRanker.run(documents, top_k)` returns the best document per cluster by score, at most `top_k`.
 - **Model file.** A `.npz` file loaded with `allow_pickle=False`; loading never executes code.
 - **Devices.** CPU always works through `faiss-cpu`. A GPU is used only when PyTorch is installed (`[gpu]` extra);
-  importing the package never imports PyTorch. On AMD, the optional, separate `emeans-rocm` package (MIT, same author
-  as this proposal) provides Triton kernels; it is never a dependency.
+  importing the package never imports PyTorch. On AMD, the optional, separate `emeans-rocm` package (MIT, same author as
+  this proposal) provides Triton kernels; it is never a dependency. This package supports emeans-rocm releases
+  `>=0.2.5,<0.3`; the install line stays unpinned. A release outside that range is not used: GPU fits run on the stock
+  faiss-cpu e-means engine (on AMD in native FP32, `stats["backend"]` `"gpu-pytorch"`), a warning (once per process)
+  names the installed version and the range, and `stats["emeans_source"]` is `"faiss-cpu <version>"`. A source checkout
+  of emeans-rocm on the path (not the installed wheel) has no checkable version and is used as is.
 - **Dependencies.** `haystack-ai>=3.5`, `faiss-cpu>=1.16.0`, `numpy>=2.0`, `packaging>=22`.
 - **Non-goals.** No query-time clustering, no `run_async`, no CLI, no own configuration file or environment
   variables.

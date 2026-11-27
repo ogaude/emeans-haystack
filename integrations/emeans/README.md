@@ -32,7 +32,7 @@ ROCm build and leave you on CPU.
 On AMD, upstream e-means runs only in native FP32 through plain PyTorch. For the fast Triton kernels and BF16/FP16 on
 RX 9000 (gfx120x) GPUs, run `pip install emeans-rocm` after installing ROCm PyTorch; there is no extra for it.
 [emeans-rocm](https://pypi.org/project/emeans-rocm/) (import name `emeans_rocm`, source at
-https://github.com/ogaude/e-means-rocm) is the author's package of Meta's e-means code under its MIT license. When it
+https://github.com/ogaude/e-means-rocm) is the author's package of Meta's e-means code under its MIT license. This package supports emeans-rocm releases `>=0.2.5,<0.3`; the install line stays unpinned. A release outside that range is not used: GPU fits run on the stock faiss-cpu e-means engine (on AMD in native FP32, `stats["backend"]` `"gpu-pytorch"`), a warning (once per process) names the installed version and the range, and `stats["emeans_source"]` is `"faiss-cpu <version>"`. A source checkout of emeans-rocm on the path (not the installed wheel) has no checkable version and is used as is. When it
 is installed, the GPU backends use it on every GPU, AMD and NVIDIA. Its NVIDIA path has not been re-run on hardware,
 so NVIDIA users who want the verified path leave it uninstalled. On AMD, if its Triton backend fails the start-up
 probe (for example, no Triton in your ROCm PyTorch), fits run in native FP32, and a warning (once per process) and
