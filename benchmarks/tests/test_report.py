@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import report
+from data import PROVENANCE_KEYS
 from precision import precision_grid
 from report import aggregate, check, marks, render
 from run_grid import full_grid
@@ -610,3 +611,44 @@ def test_version_comparison_keeps_records_without_precision(capsys: pytest.Captu
     text = "\n".join(report.version_comparison(new, old, [], [], [_ari()]))
     assert "-  main-cell objectives: largest difference 0.000 %, 3 of 3 records within 0.01 %." in text
     assert "6 0.2.5 Triton records have no precision" in capsys.readouterr().err
+
+
+def _carry(method: str, seed: int = 0, **kw: Any) -> dict[str, Any]:
+    out = rec(method, seed, 1.0, 1.0, data="cohere", **kw)
+    out.update(dict.fromkeys(PROVENANCE_KEYS))
+    return out
+
+
+def test_provenance_sentence_mixed() -> None:
+    records = [_carry(TRITON), _carry(TRITON, 1), rec("emeans-cpu", 0, 1.0, 1.0, data="cohere")]
+    precision = [dict.fromkeys(PROVENANCE_KEYS), dict.fromkeys(PROVENANCE_KEYS)]
+    text = report._provenance_sentence(records, precision)
+    assert "2 of the 3 real-data speed records carry" in text
+    assert f"(`{TRITON}`)" in text
+    assert "all 2 precision records" in text
+    assert "The `emeans-cpu` records predate these fields" in text
+    assert "do not carry" not in text
+
+
+def test_provenance_sentence_none_carry() -> None:
+    records = [rec("emeans-cpu", 0, 1.0, 1.0, data="cohere")]
+    text = report._provenance_sentence(records, None)
+    assert "do not carry the subset seed" in text
+    assert "records written by later runs do" in text
+
+
+def test_provenance_sentence_all_carry() -> None:
+    text = report._provenance_sentence([_carry(TRITON), _carry("emeans-cpu")], [])
+    assert "every real-data speed record carries" in text
+    assert "predate" not in text
+    assert "precision" not in text
+
+
+def test_provenance_sentence_partial_precision_and_random_ignored() -> None:
+    random_with_keys = rec(TRITON, 0, 1.0, 1.0)
+    random_with_keys.update(dict.fromkeys(PROVENANCE_KEYS))
+    records = [_carry(TRITON), rec("emeans-cpu", 0, 1.0, 1.0, data="cohere"), random_with_keys]
+    precision: list[dict[str, Any]] = [dict.fromkeys(PROVENANCE_KEYS), {"x": 1}, {"x": 2}]
+    text = report._provenance_sentence(records, precision)
+    assert "1 of the 2 real-data speed records" in text
+    assert "1 of the 3 precision records" in text

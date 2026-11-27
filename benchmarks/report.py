@@ -18,7 +18,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import report_notes as notes
-from data import COHERE_SUBSET_ROWS_SHA256, COHERE_SUBSET_SEED
+from data import COHERE_SUBSET_ROWS_SHA256, COHERE_SUBSET_SEED, PROVENANCE_KEYS
 from methods import METHODS
 from precision import KS as PRECISION_KS
 from precision import PCell, precision_grid
@@ -216,7 +216,53 @@ def _hours(seconds: float) -> str:
     return f"{seconds / 3600:.1f} h"
 
 
-def _protocol() -> list[str]:
+def _carries_provenance(record: dict[str, Any]) -> bool:
+    return all(key in record for key in PROVENANCE_KEYS)
+
+
+def _names(methods: list[str]) -> str:
+    return ", ".join(f"`{m}`" for m in methods)
+
+
+def _provenance_sentence(records: list[dict[str, Any]], precision_records: list[dict[str, Any]] | None) -> str:
+    """
+    Say which published records carry the per-record Cohere subset fields, computed from the records.
+
+    A record carries the fields when every `PROVENANCE_KEYS` key is present (the value may be None). A method is
+    listed as carrying when at least one of its real-data records does, and as predating them otherwise; the
+    counts stay exact either way. Random-data speed records are not counted.
+
+    :param records: Speed records.
+    :param precision_records: Precision records, or None when the precision section is left out.
+    :returns: One sentence for the protocol section.
+    """
+    real = [r for r in records if r.get("data") == "cohere"]
+    carrying = sorted({r["method"] for r in real if _carries_provenance(r)})
+    predating = sorted({r["method"] for r in real} - set(carrying))
+    m = sum(_carries_provenance(r) for r in real)
+    q = sum(_carries_provenance(r) for r in precision_records or [])
+    p = len(precision_records or [])
+    if m == 0 and q == 0:
+        return (
+            "The records published here do not carry the subset seed, row-index sha256 or raw norm range per "
+            "record; records written by later runs do."
+        )
+    fields = "the subset seed, row-index sha256 and raw norm range"
+    if m == len(real):
+        text = f"Per record, every real-data speed record carries {fields}"
+    else:
+        text = f"Per record, {m} of the {len(real)} real-data speed records carry {fields}"
+    if carrying:
+        text += f" ({_names(carrying)})"
+    if p:
+        text += f", and so do all {p} precision records" if q == p else f", and {q} of the {p} precision records do"
+    text += "."
+    if predating:
+        text += f" The {_names(predating)} records predate these fields."
+    return text
+
+
+def _protocol(records: list[dict[str, Any]], precision_records: list[dict[str, Any]] | None) -> list[str]:
     return [
         "## Protocol",
         "",
@@ -250,8 +296,7 @@ def _protocol() -> list[str]:
             "- The real 100k set is a seeded, sorted random subset of the 1M Cohere rows: seed "
             f"{COHERE_SUBSET_SEED} (`COHERE_SUBSET_SEED` in `data.py`), row-index sha256 "
             f"`{COHERE_SUBSET_ROWS_SHA256}`. "
-            "The records published here do not carry the subset seed, row-index sha256 or raw norm range per "
-            "record; records written by later runs do."
+            f"{_provenance_sentence(records, precision_records)}"
         ),
         (
             "- Cold: the first run in a fresh process, including the backend probe and Triton JIT with the "
@@ -1862,7 +1907,7 @@ def render(
     host = next(((r.get("host") or {}).get("gpu") for r in records if (r.get("host") or {}).get("gpu")), None)
     lines = _header(records, title, smoke)
     lines += _render_headline(reaches, compares, speedups, host or "GPU", rows)
-    lines += _protocol()
+    lines += _protocol(records, precision_records)
     lines += _render_passes(reaches, compares)
     lines += _render_main_comparison(compares)
     lines += _render_claims(reaches, compares, speedups)
