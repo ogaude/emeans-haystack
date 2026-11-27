@@ -601,3 +601,12 @@ def test_main_warns_on_partial_version_flags(
     err = capsys.readouterr().err
     assert "--prev-speed given without --prev-precision, --version-ari" in err
     assert "0.2.5 vs 0.2.6" not in out.read_text()
+
+
+def test_version_comparison_keeps_records_without_precision(capsys: pytest.CaptureFixture[str]) -> None:
+    old, new = _version_records(100.0)
+    for r in old:
+        r["precision"] = None
+    text = "\n".join(report.version_comparison(new, old, [], [], [_ari()]))
+    assert "-  main-cell objectives: largest difference 0.000 %, 3 of 3 records within 0.01 %." in text
+    assert "6 0.2.5 Triton records have no precision" in capsys.readouterr().err

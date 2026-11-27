@@ -1482,8 +1482,11 @@ def fork_comparison(
             f"{statistics.median(warm):.2f} [{min(warm):.2f}-{max(warm):.2f}]; cold time 0.2.5 - fork, median "
             f"{statistics.median(cold):+.3f} s."
         )
+        unlabelled = sum(1 for a, _ in pairs if not a.get("precision"))
+        if unlabelled:
+            sys.stderr.write(f"warning: {unlabelled} 0.2.5 Triton records have no precision; grouped as ''\n")
         for precision_name in sorted({a.get("precision") or "" for a, _ in pairs}):
-            sel = [(a, b) for a, b in pairs if a.get("precision") == precision_name and a["timing"] == "cold"]
+            sel = [(a, b) for a, b in pairs if (a.get("precision") or "") == precision_name and a["timing"] == "cold"]
             deltas = [abs(b["objective"] / a["objective"] - 1) for a, b in sel if a["kind"] == "main"]
             same = sum(1 for d in deltas if d <= SAME_OBJECTIVE)
             if deltas:
@@ -1627,8 +1630,11 @@ def version_comparison(
         if cold:
             line += f" Cold time ratio, median {_spread(cold)}."
         out.append(line)
+        unlabelled = sum(1 for a, _ in pairs if not a.get("precision"))
+        if unlabelled:
+            sys.stderr.write(f"warning: {unlabelled} 0.2.5 Triton records have no precision; grouped as ''\n")
         for precision_name in sorted({a.get("precision") or "" for a, _ in pairs}):
-            sel = [(a, b) for a, b in pairs if a.get("precision") == precision_name and a["timing"] == "cold"]
+            sel = [(a, b) for a, b in pairs if (a.get("precision") or "") == precision_name and a["timing"] == "cold"]
             deltas = [abs(b["objective"] / a["objective"] - 1) for a, b in sel if a["kind"] == "main"]
             if deltas:
                 largest[precision_name] = max(deltas) * 100
