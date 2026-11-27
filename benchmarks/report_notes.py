@@ -177,9 +177,11 @@ VERSION_GATE_NOTE = (
 )
 
 VERSION_CENTROIDS_NOTE = (
-    "GPU centroids at d > 2 differ slightly from 0.2.5, because 0.2.6 places revived centroids differently "
-    "(same revival rule, different split placement). The agreement figures above measure how much that moves "
-    "assignments."
+    "What this means for users: models saved with an earlier version load and assign unchanged, because assignment "
+    "from saved centroids does not depend on the engine version. A refit on emeans-rocm 0.2.6 gives GPU centroids at "
+    "d > 2 whose assignments (`cluster_id`s) differ from those of a 0.2.5 fit about as much as a different seed does "
+    "(ARI paragraph above), because 0.2.6 places revived centroids differently (same revival rule, different split "
+    "placement). The objectives stay close (main-cell objective lines above)."
 )
 
 VERSION_TIME_NOTE = (

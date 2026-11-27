@@ -1,6 +1,6 @@
 # Benchmark results
 
-Generated 2026-11-27T14:03:23+00:00.
+Generated 2026-11-27T14:16:39+00:00.
 - host: rx9060xt
 - CPU: Intel(R) Core(TM) Ultra 5 225
 - cores: 10
@@ -254,6 +254,7 @@ Both versions ran the same Triton cells with the same seeds and starting centroi
 - Speed: 372 matching records. Warm time ratio 0.2.6 / 0.2.5, median 0.85 [0.26-1.27]. Cold time ratio, median 0.99 [0.79-1.78].
 - bf16 main-cell objectives: largest difference 0.378 %, 7 of 48 records within 0.01 %.
 - fp32 main-cell objectives: largest difference 1.342 %, 11 of 48 records within 0.01 %.
+- Main-cell objectives, all precisions: 0.2.6 lower than 0.2.5 in 71 of 96 records; largest difference -1.342 % (emeans-gpu-triton-fp32 cohere 100k x 65536, 1.5 rows per centroid).
 
 | method | cell | kind | passes | objective 0.2.5 | objective 0.2.6 | difference | inside 0.2.5 seed range | warm ratio | cold ratio | ARI 0.2.6 vs 0.2.5 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -333,6 +334,8 @@ Assignment agreement (100k subset), median over seeds:
 | emeans-gpu-triton-bf16 | cohere 100k x 1024 | 0.3937 | 0.3861 | 1.0000 | yes | yes |
 | emeans-gpu-triton-bf16 | cohere 100k x 4096 | 0.2701 | 0.2535 | 1.0000 | no | yes |
 
+Baseline of the ARI part: the gate compared the ARI between versions at the same seed with the ARI between different 0.2.5 seeds. That baseline is weak: fits from one seed share their starting centroids, so the comparison leans towards passing, and a version change that moves assignments as much as a reseed still passes. The fair baseline is the same-seed 0.2.5 rerun (`ARI 0.2.5 rerun`). bf16 0.2.5 reruns are deterministic (ARI 1.0). fp32 0.2.5 reruns are not reproducible (same-seed ARI 0.34-0.45 on cohere). On cohere, 0.2.6 against 0.2.5 at the same seed gives an ARI of 0.27-0.40, about the agreement of a reseed (0.25-0.39 between 0.2.5 seeds). On random data (no cluster structure) the ARI between versions and between seeds is 0.0004-0.0006, chance level, so the ARI part compares noise there. The gate rule and its committed result (R-02) are kept as run.
+
 - Precision: 48 matching records; 89 of 192 variant drift_gap medians differ by more than 0.005 between the versions.
 - fp16: median share of documents in the same cluster as FP32, 0.2.5 0.209, 0.2.6 0.233.
 - bf16: median share of documents in the same cluster as FP32, 0.2.5 0.207, 0.2.6 0.223.
@@ -342,7 +345,7 @@ emeans-rocm 0.2.6 has a median objective outside the min-max of the 3 seeds of 0
 
 Gate and override: before the full 0.2.6 rerun, a smoke gate on the 100k subset (8 settings x 3 seeds) passed its assignment part in 8 of 8 settings and its objective part in 5 of 8; the 3 failures were all bf16 (two with a better objective than the 0.2.5 range, random k = 4096 worse by 0.020 against a 0.95 seed spread), so the gate result is a failure (exit 3). The owner then checked bf16 on 6 seeds: 0.2.6 is never worse than 0.2.5 there, and at random k = 1024 and Cohere k = 4096 it is better than every 0.2.5 value. On that evidence the owner overrode the gate on 2026-11-27 and the full rerun went ahead.
 
-GPU centroids at d > 2 differ slightly from 0.2.5, because 0.2.6 places revived centroids differently (same revival rule, different split placement). The agreement figures above measure how much that moves assignments.
+What this means for users: models saved with an earlier version load and assign unchanged, because assignment from saved centroids does not depend on the engine version. A refit on emeans-rocm 0.2.6 gives GPU centroids at d > 2 whose assignments (`cluster_id`s) differ from those of a 0.2.5 fit about as much as a different seed does (ARI paragraph above), because 0.2.6 places revived centroids differently (same revival rule, different split placement). The objectives stay close (main-cell objective lines above).
 
 Timings, as measured: the Triton fit times of 0.2.6 are about those of 0.2.5 when cold (median ratio in the speed line above) and shorter when warm. The whole runs took longer, by about 15-20 %: the grid 4 h 35 min against 3 h 58 min, the precision study 4964 s against about 4006 s. These wall times include everything around the fits and are not interpreted here; speed is not the claim of this page.
 
@@ -468,7 +471,7 @@ Every cut made to save time or memory, with its reason and what it hides. A sett
 | Load-contaminated cell-seeds were rerun: 6 cell-seeds (cold and warm, 12 records) across 4 cells, dropped and rerun on 2026-11-26 on a quiet machine, the drop logged with the dropped lines kept | concurrent jobs on the machine (agent sessions, an image-model probe, a container that pushed the machine into swap) had inflated their per-pass times | the first, slower timings of those cell-seeds; they are kept locally, not published |
 | scikit-learn cohere records (54) were dropped and rerun on 2026-11-24 after a scoring fix | its centroids were off the unit sphere and scored on a different geometry than the other methods | nothing: the replaced records were wrong, not slow |
 | The precision study's memory cap was raised from 12 to 16 GiB mid-run (2026-11-26) after 1563 cgroup `memory.max` events; 0 OOM kills, peak 12.07 GiB | the study was being throttled at the cap | precision results are unaffected (deterministic fits); its train times are not used anywhere |
-| Precision guidance: option B (owner, 2026-11-23); the 6 random-data spike contradictions of the 0.2.6 records are accepted as known (owner, 2026-11-27; the 4 of the 0.2.5 records were accepted on 2026-11-23) | on random data FP16/BF16 drift equals or slightly exceeds the FP32 other-seed drift; the guidance adds a caution instead of a claim | nothing; the contradictions are listed in the Precision section |
+| Precision guidance: option B (owner, 2026-11-23); the random-data spike contradictions of the 0.2.6 records were accepted by the owner on 2026-11-27 (those of the 0.2.5 records on 2026-11-23) | on random data FP16/BF16 drift equals or slightly exceeds the FP32 other-seed drift; the guidance adds a caution instead of a claim | nothing; the contradictions are listed in the Precision section |
 | `sklearn-lloyd` on spherical data is Euclidean Lloyd on unit-norm rows with one projection of the final centroids to unit length (scikit-learn has no spherical mode) | scikit-learn is a reference point; `faiss-lloyd` (`spherical=True`, normalised every iteration) is the true spherical Lloyd baseline | how true spherical Lloyd would behave in scikit-learn; read spherical comparisons against `faiss-lloyd` |
 | ARI between 0.2.5 and 0.2.6 on 8 settings x 3 seeds only (n = 100k, k = 1024 and 4096, random and Cohere, Triton FP32 and BF16) | the 0.2.5 grid kept no centroids or assignments; a full 0.2.5 rerun with saved centroids would cost about 5 more GPU hours and 6-7 GB | assignment agreement at 1M rows, at k = 16384 and 65536 and on sweep cells; objectives and times are compared on all 186 Triton cells |
 
@@ -655,4 +658,4 @@ Spike check: results contradict the Phase 2 spike; reported as measured, guidanc
 - random spherical n=1000000 k=1024: fp16 drift_gap median 0.997 is not below the FP32 other-seed baseline 0.997
 - random spherical n=1000000 k=1024: bf16 drift_gap median 0.998 is not below the FP32 other-seed baseline 0.997
 
-Each contradiction is a reduced-precision drift equal to or slightly above the FP32 other-seed drift (random euclidean 100k x 4096: fp16 1.214, bf16 1.216 vs 1.206; random euclidean 1M x 1024: bf16 1.001 vs 1.000; random euclidean 1M x 4096: bf16 1.128 vs 1.127; random spherical 1M x 1024: fp16 0.997, bf16 0.998 vs 0.997). The owner accepted the 6 contradictions of the 0.2.6 records as known on 2026-11-27 (the 4 of the 0.2.5 records on 2026-11-23) and kept option B: the caution above, no other change to the precision guidance.
+Each contradiction is a reduced-precision drift equal to or slightly above the FP32 other-seed drift (random euclidean 100k x 4096: fp16 1.214, bf16 1.216 vs 1.206; random euclidean 1M x 1024: bf16 1.001 vs 1.000; random euclidean 1M x 4096: bf16 1.128 vs 1.127; random spherical 1M x 1024: fp16 0.997, bf16 0.998 vs 0.997). These 6 contradictions of the 0.2.6 records were accepted by the owner on 2026-11-27 (those of the 0.2.5 records on 2026-11-23), who kept option B: the caution above, no other change to the precision guidance.

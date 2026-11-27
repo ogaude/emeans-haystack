@@ -1636,6 +1636,18 @@ def version_comparison(
                     f"- {precision_name} main-cell objectives: largest difference {max(deltas) * 100:.3f} %, "
                     f"{same} of {len(deltas)} records within 0.01 %."
                 )
+        signed = [
+            (b["objective"] / a["objective"] - 1, a) for a, b in pairs if a["timing"] == "cold" and a["kind"] == "main"
+        ]
+        if signed:
+            worst_delta, worst = max(signed, key=lambda t: abs(t[0]))
+            lower = sum(1 for d, _ in signed if d < 0)
+            out.append(
+                f"- Main-cell objectives, all precisions: 0.2.6 lower than 0.2.5 in {lower} of {len(signed)} records; "
+                f"largest difference {worst_delta * 100:+.3f} % ({worst['method']} "
+                f"{_cell_label(worst['data'], worst['n'], worst['k'])}, {worst['n'] / worst['k']:.1f} rows per "
+                "centroid)."
+            )
         out.append("")
         groups: dict[tuple, dict[str, list[float]]] = defaultdict(lambda: {"old": [], "new": [], "w": [], "c": []})
         for a, b in pairs:

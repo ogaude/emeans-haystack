@@ -564,6 +564,13 @@ def test_ari_baseline_uses_same_seed_rerun() -> None:
     assert text in section
 
 
+def test_version_comparison_objective_summary() -> None:
+    old, new = _version_records(99.0)
+    text = "\n".join(report.version_comparison(new, old, [], [], [_ari()]))
+    assert "0.2.6 lower than 0.2.5 in 3 of 3 records; largest difference -1.000 % (" in text
+    assert "random 100k x 1024, 97.7 rows per centroid)" in text
+
+
 def test_version_comparison_off_by_default() -> None:
     text = render(_full(), precision_records=[prec(0)])
     assert "0.2.5 vs 0.2.6" not in text

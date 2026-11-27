@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 README = Path(__file__).resolve().parent.parent / "README.md"
-BENCHMARKS_SHA256 = "74a23f99d0d4a22453433741bac9996bd2bc855ef0aa2fb25eae511cc7fbab34"
+BENCHMARKS_SHA256 = "feff70056c76534b399dfd0b2a1ca776c6fda371c5dbed596acffe38e0bf38e9"
 
 
 def _readme() -> str:
