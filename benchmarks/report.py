@@ -621,7 +621,8 @@ def render_precision(records: list[dict[str, Any]]) -> list[str]:
             "",
             (
                 "Each contradiction is a reduced-precision drift equal to or slightly above the FP32 other-seed drift "
-                f"({_spike_values(records)}). The owner accepted them as known and chose option B on 2026-11-23: "
+                f"({_spike_values(records)}). The owner accepted the {len(contradictions)} contradictions of the "
+                "0.2.6 records as known on 2026-11-27 (the 4 of the 0.2.5 records on 2026-11-23) and kept option B: "
                 "the caution above, no other change to the precision guidance."
             ),
             "",
@@ -1665,7 +1666,7 @@ def version_comparison(
             + (f" ({listed})" if outside else "")
             + f" and {failing} of {len(ari)} ARI settings fail the gate."
         )
-    out.append("")
+    out += ["", notes.VERSION_GATE_NOTE, "", notes.VERSION_CENTROIDS_NOTE, "", notes.VERSION_TIME_NOTE, ""]
     return out
 
 

@@ -325,7 +325,10 @@ def test_render_new_sections() -> None:
     assert "e-means needs fewer passes (epochs) than Lloyd's k-means" in headline
     assert "within 5 passes (90)" in headline
     assert "Test GPU" in headline
-    assert "0.2.6" in text.split("## GPU engines")[1]
+    engines = text.split("## GPU engines")[1]
+    assert "0.2.6" in engines
+    assert "unused_threshold" in engines
+    assert "upcoming" not in engines
     for line in text.splitlines():
         if "k-means" in line:
             assert "Lloyd" in line or "not k-means" in line, line

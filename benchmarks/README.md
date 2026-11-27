@@ -7,7 +7,7 @@ through `hatch run`, from this `benchmarks/` folder. Nothing here is published o
 
 | Method | What it is | Env |
 |---|---|---|
-| `emeans-gpu-triton-fp32`, `emeans-gpu-triton-bf16` | e-means on GPU through emeans-rocm 0.2.5 (PyPI) (Triton kernels, FP32 and BF16) | `bench-gpu-fork` |
+| `emeans-gpu-triton-fp32`, `emeans-gpu-triton-bf16` | e-means on GPU through emeans-rocm 0.2.6 (PyPI) (Triton kernels, FP32 and BF16) | `bench-gpu-fork` |
 | `emeans-gpu-native-fp32` | e-means on GPU through stock upstream e-means (native FP32 rung) | `bench-gpu` |
 | `emeans-cpu` | e-means on CPU (`NumpyEmeans`) | `bench-cpu` |
 | `faiss-lloyd` | `faiss.Kmeans`, Lloyd's k-means baseline | `bench-cpu` |
@@ -51,12 +51,12 @@ Three hatch envs, all local. The two GPU envs are AMD ROCm only and are never bu
 |---|---|
 | `bench-cpu` | CPU methods, data fetch, report, lint, types |
 | `bench-gpu` | stock upstream e-means on GPU (`torch` ROCm build pinned in `pyproject.toml`, installed from the AMD index) |
-| `bench-gpu-fork` | emeans-rocm 0.2.5 (PyPI) on GPU, and the precision study |
+| `bench-gpu-fork` | emeans-rocm 0.2.6 (PyPI) on GPU, and the precision study |
 
 The first run of each env builds it. After editing the package, run `hatch env prune` so the envs pick it up.
 
-`bench-gpu-fork` installs `emeans-rocm==0.2.5` from PyPI on top of the ROCm torch of `bench-gpu`, and its records
-store `versions.emeans_source` as `"emeans-rocm 0.2.5"` (the stock envs store `"faiss-cpu 1.16.0"`; records from
+`bench-gpu-fork` installs `emeans-rocm==0.2.6` from PyPI on top of the ROCm torch of `bench-gpu`, and its records
+store `versions.emeans_source` as `"emeans-rocm 0.2.6"` (the stock envs store `"faiss-cpu 1.16.0"`; records from
 before this change say `"e-means-rocm"` / `"faiss-cpu"`).
 
 ```bash
@@ -179,7 +179,7 @@ contradict the earlier precision spike). `report.py` writes `RESULTS.md` from `r
 `results/precision.jsonl`.
 
 Local only: `report.py` can add a comparison of the Triton records with those of the earlier fork build, which were
-replaced by the `emeans-rocm` 0.2.5 rerun and are not committed. The published `RESULTS.md` leaves it out, because
+replaced by the `emeans-rocm` 0.2.5 rerun (itself replaced by the 0.2.6 rerun) and are not committed. The published `RESULTS.md` leaves it out, because
 its source records are not published. On the owner's machine all 192 precision drift_gap medians of the two builds
 were bit-identical. To render it into a local page, pass the dropped records and a scratch output:
 
@@ -187,6 +187,29 @@ were bit-identical. To render it into a local page, pass the dropped records and
 hatch run bench-cpu:run report.py --out scratch/RESULTS-with-fork.md \
   --fork-speed scratch/dropped-fork-gpu-speed-20261126T112236.jsonl \
   --fork-precision scratch/dropped-fork-gpu-precision-20261126T112236.jsonl
+```
+
+### Version comparison
+
+`RESULTS.md` compares emeans-rocm 0.2.5 with 0.2.6 on the Triton cells.
+
+- The 0.2.5 Triton and precision records were moved out of `results/speed.jsonl` and `results/precision.jsonl` into
+  `results/speed-emeans-rocm-0.2.5.jsonl` and `results/precision-emeans-rocm-0.2.5.jsonl` by
+  `scratch/drop_025_triton.py` (logged) before the 0.2.6 run wrote the main files.
+- The 0.2.5 grid kept no centroids. Centroids of both versions were captured on the 100k subset (8 settings, seeds
+  0-2) with `scratch/capture_versions.sh <dir> <seeds>`: run it in `bench-gpu-fork` with the version installed,
+  outside quiet hours.
+- `hatch run bench-cpu:run compare_versions.py` scores them: a setting passes when the 0.2.6 median objective lies
+  inside the min-max of the 0.2.5 objectives and the median ARI between versions is at least the median ARI between
+  0.2.5 seeds; any failing setting exits 3 and needs an owner decision. The result is in
+  `results/version-ari-emeans-rocm-0.2.5-0.2.6.jsonl`.
+- `report.py` renders the comparison when given the three files:
+
+```bash
+hatch run bench-cpu:run report.py \
+  --prev-speed results/speed-emeans-rocm-0.2.5.jsonl \
+  --prev-precision results/precision-emeans-rocm-0.2.5.jsonl \
+  --version-ari results/version-ari-emeans-rocm-0.2.5-0.2.6.jsonl
 ```
 
 ## What is committed

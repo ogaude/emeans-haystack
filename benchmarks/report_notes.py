@@ -68,8 +68,8 @@ STATIC_CUTS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         (
-            "Precision guidance: option B (owner, 2026-11-23); the 4 random-data spike contradictions are accepted as "
-            "known"
+            "Precision guidance: option B (owner, 2026-11-23); the 6 random-data spike contradictions of the 0.2.6 "
+            "records are accepted as known (owner, 2026-11-27; the 4 of the 0.2.5 records were accepted on 2026-11-23)"
         ),
         (
             "on random data FP16/BF16 drift equals or slightly exceeds the FP32 other-seed drift; the guidance adds "
@@ -111,17 +111,20 @@ KEPT_SLOW: tuple[tuple[str, str, str], ...] = (
 
 GPU_ENGINE_NOTE = (
     "The Triton rows (`emeans-gpu-triton-fp32`, `emeans-gpu-triton-bf16`) and the precision study ran on "
-    "`emeans-rocm` 0.2.5 from PyPI on 2026-11-26. The native rows (`emeans-gpu-native-fp32`) ran on 2026-11-22 on "
-    "the stock e-means engine of faiss-cpu 1.16.0 through plain PyTorch (recorded as `faiss-cpu`; the records' "
-    "faiss version is 1.16.0). `emeans-rocm` 0.2.6 (upcoming) revives clusters by cost by default, which changes "
-    "training results, so these figures describe 0.2.5 and do not describe 0.2.6."
+    "`emeans-rocm` 0.2.6 from PyPI on 2026-11-27, with `unused_threshold=0.1` passed explicitly (mass-based "
+    "revival, the default of 0.2.5 and of stock faiss; the own default of 0.2.6 is cost-based revival and is not "
+    "used here). The native rows (`emeans-gpu-native-fp32`) ran on 2026-11-22 on the stock e-means engine of "
+    "faiss-cpu 1.16.0 through plain PyTorch (recorded as `faiss-cpu`; the records' faiss version is 1.16.0) and "
+    "were not rerun. The 0.2.5 records are kept in `results/speed-emeans-rocm-0.2.5.jsonl` and "
+    "`results/precision-emeans-rocm-0.2.5.jsonl` and are compared with the 0.2.6 records below."
 )
 
 FORK_NOTE = (
     "Before 0.2.5 was published, the Triton cells and the precision study ran on an earlier build of the "
-    "author's e-means-rocm fork (commit not recorded). Those records were dropped from `results/` on 2026-11-26 "
-    "and replaced by the 0.2.5 rerun; they are kept locally and are not published. This comparison is computed "
-    "from them only when `report.py` is given `--fork-speed` and `--fork-precision`."
+    "author's e-means-rocm fork (commit not recorded). Those records were replaced on 2026-11-26 by the 0.2.5 "
+    "rerun, which the 0.2.6 rerun of 2026-11-27 replaced in turn (the 0.2.5 records are kept in labelled files). "
+    "The fork records are kept locally and are not published. This comparison is computed from them only when "
+    "`report.py` is given `--fork-speed` and `--fork-precision`."
 )
 
 OPTION_B_CAUTION = (
@@ -151,4 +154,26 @@ VERSION_ARI_CUT: tuple[str, str, str] = (
         "assignment agreement at 1M rows, at k = 16384 and 65536 and on sweep cells; objectives and times are "
         "compared on all 186 Triton cells"
     ),
+)
+
+VERSION_GATE_NOTE = (
+    "Gate and override: before the full 0.2.6 rerun, a smoke gate on the 100k subset (8 settings x 3 seeds) "
+    "passed its assignment part in 8 of 8 settings and its objective part in 5 of 8; the 3 failures were all "
+    "bf16 (two with a better objective than the 0.2.5 range, random k = 4096 worse by 0.020 against a 0.95 seed "
+    "spread), so the gate result is a failure (exit 3). The owner then checked bf16 on 6 seeds: 0.2.6 is never "
+    "worse than 0.2.5 there, and at random k = 1024 and Cohere k = 4096 it is better than every 0.2.5 value. On that "
+    "evidence the owner overrode the gate on 2026-11-27 and the full rerun went ahead."
+)
+
+VERSION_CENTROIDS_NOTE = (
+    "GPU centroids at d > 2 differ slightly from 0.2.5, because 0.2.6 places revived centroids differently "
+    "(same revival rule, different split placement). The agreement figures above measure how much that moves "
+    "assignments."
+)
+
+VERSION_TIME_NOTE = (
+    "Timings, as measured: the per-cell Triton fit times of 0.2.6 have a median of 0.98 times those of 0.2.5. "
+    "The whole runs took longer, by about 15-20 %: the grid 4 h 35 min against 3 h 58 min, the precision study "
+    "4964 s against about 4006 s. These wall times include everything around the fits and are not interpreted "
+    "here; speed is not the claim of this page."
 )
