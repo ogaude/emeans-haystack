@@ -1565,14 +1565,18 @@ def _ari_baseline(ari: list[dict[str, Any]]) -> str:
         "comparison leans towards passing, and a version change that moves assignments as much as a reseed still "
         "passes. The fair baseline is the same-seed 0.2.5 rerun (`ARI 0.2.5 rerun`)."
     )
-    for precision_name in sorted({str(a["method"]).removeprefix(TRITON_PREFIX) for a in ari}):
-        reruns = [a["ari_old_rerun"] for a in ari if str(a["method"]).removeprefix(TRITON_PREFIX) == precision_name]
+    structured = [a for a in ari if a["data"] != "random"]
+    names = ", ".join(sorted({a["data"] for a in structured}))
+    for precision_name in sorted({str(a["method"]).removeprefix(TRITON_PREFIX) for a in structured}):
+        reruns = [
+            a["ari_old_rerun"] for a in structured if str(a["method"]).removeprefix(TRITON_PREFIX) == precision_name
+        ]
         if min(reruns) == 1.0:
             text += f" {precision_name} 0.2.5 reruns are deterministic (ARI 1.0)."
         else:
-            text += f" {precision_name} 0.2.5 reruns are not reproducible (same-seed ARI {_range(reruns, 4)})."
-    for data in sorted({a["data"] for a in ari if a["data"] != "random"}):
-        sel = [a for a in ari if a["data"] == data]
+            text += f" {precision_name} 0.2.5 reruns are not reproducible (same-seed ARI {_range(reruns)} on {names})."
+    for data in sorted({a["data"] for a in structured}):
+        sel = [a for a in structured if a["data"] == data]
         between = [a["ari_new_old_median"] for a in sel]
         seeds = [a["ari_old_seeds_median"] for a in sel]
         level = abs(statistics.median(between) - statistics.median(seeds)) <= RESEED_LEVEL

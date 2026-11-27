@@ -555,7 +555,7 @@ def test_ari_baseline_uses_same_seed_rerun() -> None:
     ]  # fmt: skip
     text = report._ari_baseline(records)
     assert "bf16 0.2.5 reruns are deterministic (ARI 1.0)" in text
-    assert "fp32 0.2.5 reruns are not reproducible (same-seed ARI 0.0005-0.4500)" in text
+    assert "fp32 0.2.5 reruns are not reproducible (same-seed ARI 0.45 on cohere)" in text
     assert "On cohere, 0.2.6 against 0.2.5 at the same seed gives an ARI of 0.27-0.92" in text
     assert "On random data (no cluster structure) the ARI between versions and between seeds is 0.0004-0.0005" in text
     assert "kept as run" in text
