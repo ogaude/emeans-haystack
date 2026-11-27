@@ -173,7 +173,8 @@ VERSION_CENTROIDS_NOTE = (
 
 VERSION_TIME_NOTE = (
     "Timings, as measured: the Triton fit times of 0.2.6 are about those of 0.2.5 when cold (median ratio in the "
-    "speed line above) and shorter when warm. The whole runs took longer, by about 15-20 %: the grid 4 h 35 min against 3 h 58 min, the precision study "
-    "4964 s against about 4006 s. These wall times include everything around the fits and are not interpreted "
+    "speed line above) and shorter when warm. The whole runs took longer, by about 15-20 %: "
+    "the grid 4 h 35 min against 3 h 58 min, the precision study 4964 s against about 4006 s. "
+    "These wall times include everything around the fits and are not interpreted "
     "here; speed is not the claim of this page."
 )

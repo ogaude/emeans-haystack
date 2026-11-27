@@ -466,11 +466,11 @@ def _version_records(new_objective: float) -> tuple[list[dict[str, Any]], list[d
     return old, new
 
 
-def _ari(ok: bool = True) -> dict[str, Any]:
+def _ari(ok: bool = True, ok_objective: bool = True) -> dict[str, Any]:
     return {
         "method": TRITON, "data": "random", "n": 100_000, "k": 1024, "ari_new_old": [0.91, 0.92, 0.93],
         "ari_old_seeds": [0.8, 0.85, 0.9], "ari_old_rerun": 0.99, "ari_new_old_median": 0.92,
-        "ari_old_seeds_median": 0.85, "ok_objective": True, "ok_ari": ok, "ok": ok,
+        "ari_old_seeds_median": 0.85, "ok_objective": ok_objective, "ok_ari": ok, "ok": ok and ok_objective,
     }  # fmt: skip
 
 
@@ -496,8 +496,16 @@ def test_version_comparison_missing_ari_shows_dash() -> None:
 def test_version_comparison_differs() -> None:
     old, new = _version_records(130.0)
     text = "\n".join(report.version_comparison(new, old, [], [], [_ari(ok=False)]))
-    assert "differs from 0.2.5 beyond seed noise in 1 cells" in text
-    assert "1 of 1 ARI settings fail the gate" in text
+    assert "outside the min-max of the 3 seeds of 0.2.5 of the same cell in 1 cells" in text
+    assert "its ARI part in 0 of 1" in text
+    assert "largest main-cell objective difference is fp32 " in text
+
+
+def test_version_comparison_objective_failure_is_not_an_ari_failure() -> None:
+    old, new = _version_records(130.0)
+    text = "\n".join(report.version_comparison(new, old, [], [], [_ari(ok=True, ok_objective=False)]))
+    assert "objective part in 0 of 1 settings and its ARI part in 1 of 1" in text
+    assert "ARI settings fail" not in text
 
 
 def test_version_comparison_off_by_default() -> None:

@@ -1,6 +1,6 @@
 # Benchmark results
 
-Generated 2026-11-27T14:00:23+00:00.
+Generated 2026-11-27T14:03:23+00:00.
 - host: rx9060xt
 - CPU: Intel(R) Core(TM) Ultra 5 225
 - cores: 10
@@ -338,7 +338,7 @@ Assignment agreement (100k subset), median over seeds:
 - bf16: median share of documents in the same cluster as FP32, 0.2.5 0.207, 0.2.6 0.223.
 - Precision reference objective: median relative difference 0.014 %.
 
-emeans-rocm 0.2.6 differs from 0.2.5 beyond seed noise in 52 cells (emeans-gpu-triton-bf16 cohere 100k x 16384 (main, default passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (main, default passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (sweep, 1.0 passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (sweep, 10.0 passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (sweep, 2.0 passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (sweep, 25.0 passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (sweep, 5.0 passes); emeans-gpu-triton-bf16 cohere 100k x 65536 (main, default passes); emeans-gpu-triton-bf16 cohere 1M x 16384 (main, default passes); emeans-gpu-triton-bf16 cohere 1M x 16384 (sweep, 1.0 passes) and more) and 3 of 8 ARI settings fail the gate.
+emeans-rocm 0.2.6 has a median objective outside the min-max of the 3 seeds of 0.2.5 of the same cell in 52 cells (emeans-gpu-triton-bf16 cohere 100k x 16384 (main, default passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (main, default passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (sweep, 1.0 passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (sweep, 10.0 passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (sweep, 2.0 passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (sweep, 25.0 passes); emeans-gpu-triton-bf16 cohere 100k x 4096 (sweep, 5.0 passes); emeans-gpu-triton-bf16 cohere 100k x 65536 (main, default passes); emeans-gpu-triton-bf16 cohere 1M x 16384 (main, default passes); emeans-gpu-triton-bf16 cohere 1M x 16384 (sweep, 1.0 passes) and more); the largest main-cell objective difference is bf16 0.378 %, fp32 1.342 %. The smoke gate passed its objective part in 5 of 8 settings and its ARI part in 8 of 8.
 
 Gate and override: before the full 0.2.6 rerun, a smoke gate on the 100k subset (8 settings x 3 seeds) passed its assignment part in 8 of 8 settings and its objective part in 5 of 8; the 3 failures were all bf16 (two with a better objective than the 0.2.5 range, random k = 4096 worse by 0.020 against a 0.95 seed spread), so the gate result is a failure (exit 3). The owner then checked bf16 on 6 seeds: 0.2.6 is never worse than 0.2.5 there, and at random k = 1024 and Cohere k = 4096 it is better than every 0.2.5 value. On that evidence the owner overrode the gate on 2026-11-27 and the full rerun went ahead.
 

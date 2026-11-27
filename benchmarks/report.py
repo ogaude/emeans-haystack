@@ -1554,6 +1554,7 @@ def version_comparison(
     out = ["### emeans-rocm 0.2.5 vs 0.2.6", "", notes.VERSION_NOTE, ""]
     ari_by_cell: dict[tuple, dict[str, Any]] = {(a["method"], a["data"], a["n"], a["k"]): a for a in ari}
     outside: list[str] = []
+    largest: dict[str, float] = {}
     if pairs:
         warm = [b["seconds"] / a["seconds"] for a, b in pairs if a["timing"] == "warm" and a["seconds"]]
         cold = [b["seconds"] / a["seconds"] for a, b in pairs if a["timing"] == "cold" and a["seconds"]]
@@ -1567,6 +1568,7 @@ def version_comparison(
             sel = [(a, b) for a, b in pairs if a.get("precision") == precision_name and a["timing"] == "cold"]
             deltas = [abs(b["objective"] / a["objective"] - 1) for a, b in sel if a["kind"] == "main"]
             if deltas:
+                largest[precision_name] = max(deltas) * 100
                 same = sum(1 for d in deltas if d <= SAME_OBJECTIVE)
                 out.append(
                     f"- {precision_name} main-cell objectives: largest difference {max(deltas) * 100:.3f} %, "
@@ -1660,11 +1662,15 @@ def version_comparison(
         )
     else:
         listed = "; ".join(outside[:VERSION_LISTED]) + (" and more" if len(outside) > VERSION_LISTED else "")
-        failing = sum(1 for a in ari if not a.get("ok"))
+        n_obj = sum(1 for a in ari if a.get("ok_objective"))
+        n_ari = sum(1 for a in ari if a.get("ok_ari"))
+        spread = ", ".join(f"{v} {x:.3f} %" for v, x in sorted(largest.items()))
         out.append(
-            f"emeans-rocm 0.2.6 differs from 0.2.5 beyond seed noise in {len(outside)} cells"
-            + (f" ({listed})" if outside else "")
-            + f" and {failing} of {len(ari)} ARI settings fail the gate."
+            f"emeans-rocm 0.2.6 has a median objective outside the min-max of the 3 seeds of 0.2.5 of the same cell "
+            f"in {len(outside)} cells" + (f" ({listed})" if outside else "")
+            + (f"; the largest main-cell objective difference is {spread}" if spread else "")
+            + f". The smoke gate passed its objective part in {n_obj} of {len(ari)} settings and its ARI part in "
+            f"{n_ari} of {len(ari)}."
         )
     out += ["", notes.VERSION_GATE_NOTE, "", notes.VERSION_CENTROIDS_NOTE, "", notes.VERSION_TIME_NOTE, ""]
     return out
