@@ -1,0 +1,34 @@
+# Hayhooks smoke harness. Not a package: nothing here is published or installed.
+# Personal-repo-only, not run in CI. The emeans-haystack package is installed non-editable from
+# ../integrations/emeans; run `hatch env prune` after editing the package so the env picks the change up.
+
+[tool.hatch.envs.default]
+detached = true
+installer = "uv"
+python = "3.14"
+dependencies = [
+    "emeans-haystack @ {root:parent:uri}/integrations/emeans",
+    "hayhooks==2.5.0",
+    "ruff",
+]
+
+[tool.hatch.envs.default.scripts]
+smoke = "python smoke.py {args}"
+lint = "ruff check . && ruff format --check ."
+fmt = "ruff check --fix . ; ruff format ."
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "A", "ANN", "ARG", "B", "C",
+    "D102", "D103", "D205", "D209", "D213", "D417", "D419",
+    "DTZ", "E", "EM", "F", "I", "ICN", "ISC", "N",
+    "PLC", "PLE", "PLR", "PLW", "Q", "RUF", "S", "T", "TID", "UP", "W", "YTT",
+]
+ignore = [
+    "B027", "B008", "S105", "S106", "S107",
+    "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR0917",
+    "ANN401",
+]
