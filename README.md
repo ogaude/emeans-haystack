@@ -111,6 +111,16 @@ The fit statistics tell you what ran: `stats["backend"]`, `stats["emeans_source"
 Use FP32 when stable `cluster_id`s matter: FP16/BF16 objectives stay close to FP32, but at about 100k rows they change
 document assignments almost as much as reseeding does.
 
+**Reproducible GPU fits:** `deterministic=False` is the default. With it, two GPU fits with the same `seed` can end in
+different clusterings. emeans-rocm 0.2.6 sums FP32/BF16 batch statistics without atomic additions only at d ≥ 128; every
+other path, including every d < 128, uses atomic additions. `deterministic=True` turns on
+`torch.use_deterministic_algorithms(True)` for the duration of training and then restores the previous setting. The
+setting is process-wide, so other GPU work in the process runs deterministically meanwhile. On NVIDIA, also export
+`CUBLAS_WORKSPACE_CONFIG=:4096:8` before starting the process. On CPU the parameter has no effect: CPU training is
+already deterministic. Measured on an RX 9060 XT with emeans-rocm 0.2.6 (Triton, FP32, d = 768): an FP32 rerun with
+`deterministic=True` gave identical centroids, assignments and objective in all 48 cells of the precision study
+([benchmarks/RESULTS.md](benchmarks/RESULTS.md)). Runs without `deterministic=True`, and d < 128, were not measured.
+
 ## Benchmarks
 
 **e-means needs fewer passes to reach the same objective. It is not faster per pass.**
