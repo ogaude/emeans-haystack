@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2
+
+- The README now states the supported emeans-rocm range (`>=0.2.5,<0.3`) and what happens outside it: a release outside the range is not used, GPU fits run on the stock faiss-cpu e-means engine (on AMD in native FP32), a warning (once per process) names the installed version and the range, and `stats["emeans_source"]` is `"faiss-cpu <version>"`.
+- Benchmark records now carry `unused_threshold` (benchmarks only, not the package).
+- The README benchmark links are now absolute GitHub URLs, so they work on the PyPI page.
+- First release on PyPI.
+- No code or API change: the public API and the `.npz` model format are unchanged.
+
 ## 0.1.1
 
 - The package now passes an explicit `unused_threshold` (0.1, or 0.0 when d <= 2) to every e-means engine: stock faiss-cpu, emeans-rocm, the GPU probe and the assigners. emeans-rocm 0.2.6 changed its default to a cost-based threshold; the explicit value keeps the mass-based revival of 0.2.5 and stock faiss.

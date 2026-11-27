@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 README = Path(__file__).resolve().parent.parent / "README.md"
-BENCHMARKS_SHA256 = "feff70056c76534b399dfd0b2a1ca776c6fda371c5dbed596acffe38e0bf38e9"
+BENCHMARKS_SHA256 = "290f2a6cfdc9020f7bcc04a61889908f33bfebc4b4d34ea9a5084b6dd66f93ee"
 
 
 def _readme() -> str:
@@ -74,3 +74,10 @@ def test_readme_numpy_requirement() -> None:
     text = _readme()
     assert "numpy>=2.0" in text
     assert "numpy>=1.25" not in text
+
+
+def test_readme_links_are_absolute() -> None:
+    text = _readme()
+    for relative in ("](../", "](./", 'src="../'):
+        assert relative not in text, f"README has a relative link or image ({relative!r}); PyPI cannot resolve it"
+    assert "https://github.com/ogaude/emeans-haystack/blob/main/benchmarks/RESULTS.md" in text

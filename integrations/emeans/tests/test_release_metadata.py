@@ -26,3 +26,15 @@ def test_changelog_documents_the_0_1_1_release() -> None:
     assert "unused_threshold" in body
     # newest first: 0.1.1 is listed above 0.1.0
     assert changelog.index("## 0.1.1") < changelog.index("## 0.1.0")
+
+
+def test_changelog_documents_the_0_1_2_release() -> None:
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    match = re.search(r"^## 0\.1\.2\s*$(.*?)(?=^## |\Z)", changelog, re.MULTILINE | re.DOTALL)
+    assert match is not None, "CHANGELOG.md has no '## 0.1.2' heading"
+    body = match.group(1)
+    assert "emeans-rocm" in body
+    assert "unused_threshold" in body
+    assert "PyPI" in body
+    # newest first: 0.1.2 is listed above 0.1.1
+    assert changelog.index("## 0.1.2") < changelog.index("## 0.1.1")
