@@ -1517,10 +1517,12 @@ def load_version_ari(path: Path) -> list[dict[str, Any]]:
     Read the ARI records written by `compare_versions.py`.
 
     :param path: JSONL file, one record per line.
-    :returns: The records; empty when the file is missing.
+    :returns: The records.
+    :raises SystemExit: When the file is missing (a mistyped path must not read as "no ARI data").
     """
     if not path.exists():
-        return []
+        msg = f"{path}: no such file (written by compare_versions.py)"
+        raise SystemExit(msg)
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
@@ -1654,11 +1656,16 @@ def version_comparison(
             median_ref = statistics.median(refs) * 100
             out.append(f"- Precision reference objective: median relative difference {median_ref:.3f} %.")
         out.append("")
-    gates_ok = all(a.get("ok") for a in ari)
+    gates_ok = bool(ari) and all(a.get("ok") for a in ari)
     if pairs and gates_ok and not outside:
         out.append(
             "On these cells emeans-rocm 0.2.6 matches 0.2.5 within seed noise: every median objective lies inside "
             "the 0.2.5 range over seeds and the ARI between versions is at least that between 0.2.5 seeds."
+        )
+    elif pairs and not ari and not outside:
+        out.append(
+            "Every median objective of emeans-rocm 0.2.6 lies inside the 0.2.5 range over seeds; no ARI records were "
+            "given, so assignment agreement is not evaluated."
         )
     else:
         listed = "; ".join(outside[:VERSION_LISTED]) + (" and more" if len(outside) > VERSION_LISTED else "")

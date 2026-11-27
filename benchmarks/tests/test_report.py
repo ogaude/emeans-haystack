@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from pathlib import Path
 from typing import Any
+
+import pytest
 
 import report
 from precision import precision_grid
@@ -491,6 +494,14 @@ def test_version_comparison_missing_ari_shows_dash() -> None:
     old, new = _version_records(100.0)
     text = "\n".join(report.version_comparison(new, old, [], [], []))
     assert "| - |" in text
+    assert "ARI between versions is at least" not in text
+    assert "matches 0.2.5 within seed noise" not in text
+    assert "no ARI records were given" in text
+
+
+def test_load_version_ari_missing_file_errors(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="no such file"):
+        report.load_version_ari(tmp_path / "typo.jsonl")
 
 
 def test_version_comparison_differs() -> None:
