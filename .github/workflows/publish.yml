@@ -1,0 +1,130 @@
+name: Publish / emeans
+
+on:
+  push:
+    tags:
+      - "integrations/emeans-v*"
+
+concurrency:
+  group: publish-emeans-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  FORCE_COLOR: "1"
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/emeans
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Install Hatch
+        run: |
+          python -m pip install --upgrade pip
+          pip install hatch --uploaded-prior-to=P1D
+
+      - name: Check version matches tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#integrations/emeans-v}"
+          BUILT_VERSION="$(hatch version)"
+          if [ "$BUILT_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::hatch version '$BUILT_VERSION' differs from the tag version '$TAG_VERSION'"
+            exit 1
+          fi
+
+      - name: Build
+        run: hatch build
+
+      - name: Check distributions
+        run: |
+          test "$(ls dist/emeans_haystack-*.whl | wc -l)" = 1
+          test "$(ls dist/emeans_haystack-*.tar.gz | wc -l)" = 1
+          unzip -p dist/*.whl '*.dist-info/METADATA' > "$RUNNER_TEMP/METADATA"
+          grep -E '^Name: emeans-haystack$' "$RUNNER_TEMP/METADATA"
+          grep -Fx "Version: $(hatch version)" "$RUNNER_TEMP/METADATA"
+          grep -Fx "Version: ${GITHUB_REF_NAME#integrations/emeans-v}" "$RUNNER_TEMP/METADATA"
+          if grep -F '](../' "$RUNNER_TEMP/METADATA"; then echo "::error::relative link in long description"; exit 1; fi
+          grep -E '^License-Expression: Apache-2.0$' "$RUNNER_TEMP/METADATA"
+          grep -Fx 'License-File: LICENSE.txt' "$RUNNER_TEMP/METADATA"
+          grep -Fx 'Requires-Dist: numpy>=2.0' "$RUNNER_TEMP/METADATA"
+          grep -Fx 'Requires-Dist: faiss-cpu>=1.16.0' "$RUNNER_TEMP/METADATA"
+          grep -Fx 'Requires-Dist: haystack-ai>=3.5' "$RUNNER_TEMP/METADATA"
+          grep -Fx 'Requires-Dist: packaging>=22' "$RUNNER_TEMP/METADATA"
+          unzip -Z1 dist/*.whl > "$RUNNER_TEMP/wheel-files"
+          grep -Ex '[^/]+\.dist-info/licenses/LICENSE\.txt' "$RUNNER_TEMP/wheel-files"
+          grep -Fx 'haystack_integrations/components/preprocessors/py.typed' "$RUNNER_TEMP/wheel-files"
+          grep -Fx 'haystack_integrations/components/rankers/py.typed' "$RUNNER_TEMP/wheel-files"
+          tar -tzf dist/*.tar.gz > "$RUNNER_TEMP/sdist-files"
+          grep -Ex '[^/]+/LICENSE\.txt' "$RUNNER_TEMP/sdist-files"
+          grep -Ex '[^/]+/src/haystack_integrations/components/preprocessors/py\.typed' "$RUNNER_TEMP/sdist-files"
+          grep -Ex '[^/]+/src/haystack_integrations/components/rankers/py\.typed' "$RUNNER_TEMP/sdist-files"
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: integrations/emeans/dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/emeans-haystack
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+          skip-existing: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/emeans-haystack
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
