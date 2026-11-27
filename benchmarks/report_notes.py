@@ -128,3 +128,27 @@ OPTION_B_CAUTION = (
     "Use FP32 when stable `cluster_id`s matter: at about 100k rows, FP16 and BF16 change document assignments "
     "almost as much as reseeding does (owner decision, option B, 2026-11-23)."
 )
+
+VERSION_NOTE = (
+    "Both versions ran the same Triton cells with the same seeds and starting centroids. emeans-haystack passes "
+    "`unused_threshold=0.1` (mass-based revival), which equals the default of 0.2.5, so the 0.2.5 records (made with "
+    "no explicit threshold) and the 0.2.6 records use the same revival rule. `emeans-rocm` 0.2.6 places revived "
+    "centroids along the donor's long axis (upstream faiss change #5975), so centroids can still differ. The 0.2.5 "
+    "records are kept in `results/speed-emeans-rocm-0.2.5.jsonl` and `results/precision-emeans-rocm-0.2.5.jsonl`; "
+    "the ARI figures come from `compare_versions.py`."
+)
+
+VERSION_ARI_CUT: tuple[str, str, str] = (
+    (
+        "ARI between 0.2.5 and 0.2.6 on 8 settings x 3 seeds only (n = 100k, k = 1024 and 4096, random and Cohere, "
+        "Triton FP32 and BF16)"
+    ),
+    (
+        "the 0.2.5 grid kept no centroids or assignments; a full 0.2.5 rerun with saved centroids would cost about 5 "
+        "more GPU hours and 6-7 GB"
+    ),
+    (
+        "assignment agreement at 1M rows, at k = 16384 and 65536 and on sweep cells; objectives and times are "
+        "compared on all 186 Triton cells"
+    ),
+)

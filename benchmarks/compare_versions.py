@@ -205,12 +205,11 @@ def main() -> int:
         "method", "data", "k", "0.2.5 objective range", "0.2.6 median", "ARI 0.2.6 vs 0.2.5",
         "ARI 0.2.5 seeds", "ARI 0.2.5 rerun", "objective gate", "ARI gate",
     ]  # fmt: skip
-    print("| " + " | ".join(header) + " |")
-    print("|" + "---|" * len(header))
-    for row in rows:
-        print("| " + " | ".join(row) + " |")
+    table = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    table += ["| " + " | ".join(row) + " |" for row in rows]
+    sys.stdout.write("\n".join(table) + "\n")
     if not all(r["ok"] for r in records):
-        print("R-02 gate: STOP, report to the owner (D-07)")
+        sys.stdout.write("R-02 gate: STOP, report to the owner (D-07)\n")
         return 3
     return 0
 

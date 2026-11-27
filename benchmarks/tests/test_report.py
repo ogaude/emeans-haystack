@@ -9,8 +9,11 @@ from precision import precision_grid
 from report import aggregate, check, marks, render
 from run_grid import full_grid
 
-DEVICE = {"emeans-cpu": "cpu", "faiss-lloyd": "cpu", "sklearn-lloyd": "cpu", "gpu-a": "gpu"}
-ENGINE = {"emeans-cpu": "e-means", "faiss-lloyd": "lloyd", "sklearn-lloyd": "lloyd", "gpu-a": "e-means"}
+TRITON = "emeans-gpu-triton-fp32"
+DEVICE = {"emeans-cpu": "cpu", "faiss-lloyd": "cpu", "sklearn-lloyd": "cpu", "gpu-a": "gpu", TRITON: "gpu"}
+ENGINE = {
+    "emeans-cpu": "e-means", "faiss-lloyd": "lloyd", "sklearn-lloyd": "lloyd", "gpu-a": "e-means", TRITON: "e-means"
+}  # fmt: skip
 
 
 def rec(
@@ -448,3 +451,62 @@ def test_per_pass_summary_ranges() -> None:
 
 def test_fork_comparison_off_by_default() -> None:
     assert "fork build" not in render(_full(), precision_records=[prec(0)])
+
+
+def _version_records(new_objective: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    old: list[dict[str, Any]] = []
+    new: list[dict[str, Any]] = []
+    for seed in range(3):
+        for timing, o_s, n_s in (("cold", 2.0, 2.2), ("warm", 1.0, 1.1)):
+            old.append(rec(TRITON, seed, o_s, 100.0 + seed, timing=timing))
+            new.append(rec(TRITON, seed, n_s, new_objective + seed, timing=timing))
+    return old, new
+
+
+def _ari(ok: bool = True) -> dict[str, Any]:
+    return {
+        "method": TRITON, "data": "random", "n": 100_000, "k": 1024, "ari_new_old": [0.91, 0.92, 0.93],
+        "ari_old_seeds": [0.8, 0.85, 0.9], "ari_old_rerun": 0.99, "ari_new_old_median": 0.92,
+        "ari_old_seeds_median": 0.85, "ok_objective": True, "ok_ari": ok, "ok": ok,
+    }  # fmt: skip
+
+
+def test_version_comparison() -> None:
+    old, new = _version_records(100.0)
+    text = "\n".join(report.version_comparison(new, old, [prec(0)], [prec(0)], [_ari()]))
+    assert "### emeans-rocm 0.2.5 vs 0.2.6" in text
+    assert report.notes.VERSION_NOTE in text
+    assert "6 matching records" in text
+    assert "1.10 [1.10-1.10]" in text
+    assert "| 0.9200 |" in text
+    assert "| yes | yes |" in text
+    assert "matches 0.2.5 within seed noise" in text
+    assert "0 of 4 variant drift_gap medians differ" in text
+
+
+def test_version_comparison_missing_ari_shows_dash() -> None:
+    old, new = _version_records(100.0)
+    text = "\n".join(report.version_comparison(new, old, [], [], []))
+    assert "| - |" in text
+
+
+def test_version_comparison_differs() -> None:
+    old, new = _version_records(130.0)
+    text = "\n".join(report.version_comparison(new, old, [], [], [_ari(ok=False)]))
+    assert "differs from 0.2.5 beyond seed noise in 1 cells" in text
+    assert "1 of 1 ARI settings fail the gate" in text
+
+
+def test_version_comparison_off_by_default() -> None:
+    text = render(_full(), precision_records=[prec(0)])
+    assert "0.2.5 vs 0.2.6" not in text
+    assert report.notes.VERSION_ARI_CUT[0] not in text
+
+
+def test_render_version_comparison_lists_ari_cut() -> None:
+    old, new = _version_records(100.0)
+    text = render(
+        _full() + new, precision_records=[prec(0)], prev_speed=old, prev_precision=[prec(0)], version_ari=[_ari()]
+    )
+    assert "### emeans-rocm 0.2.5 vs 0.2.6" in text
+    assert report.notes.VERSION_ARI_CUT[0] in text

@@ -5,9 +5,10 @@
 import json
 from pathlib import Path
 
-import compare_versions as cv
 import numpy as np
 import pytest
+
+import compare_versions as cv
 
 METHOD = "emeans-gpu-triton-fp32"
 
@@ -62,7 +63,7 @@ def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, new_shift: float) ->
     n, d, k = 200, 8, 4
     rng = np.random.default_rng(0)
     x = rng.standard_normal((n, d)).astype(np.float32)
-    monkeypatch.setattr(cv, "load_dataset", lambda name, n_, d_: (x, {}))
+    monkeypatch.setattr(cv, "load_dataset", lambda *_args: (x, {}))
     monkeypatch.setattr(cv, "GATE_N", n)
     monkeypatch.setattr(cv, "D", d)
     monkeypatch.setattr(cv, "GATE_KS", (k,))

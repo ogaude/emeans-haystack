@@ -1285,7 +1285,12 @@ def _capped(records: list[dict[str, Any]]) -> dict[tuple[str, str, int, int], li
     return found
 
 
-def _render_cuts(records: list[dict[str, Any]], rows: list[Row], reaches: list[PassReach]) -> list[str]:
+def _render_cuts(
+    records: list[dict[str, Any]],
+    rows: list[Row],
+    reaches: list[PassReach],
+    extra_cuts: tuple[tuple[str, str, str], ...] = (),
+) -> list[str]:
     capped = _capped(records)
     main = _main_points(rows)
     hidden = []
@@ -1376,7 +1381,7 @@ def _render_cuts(records: list[dict[str, Any]], rows: list[Row], reaches: list[P
     ]
     return out + _table(
         ["cut or choice", "reason", "what it hides"],
-        [list(row) for row in [*computed, _kept_slow_row(records), *notes.STATIC_CUTS]],
+        [list(row) for row in [*computed, _kept_slow_row(records), *notes.STATIC_CUTS, *extra_cuts]],
     )
 
 
@@ -1506,6 +1511,164 @@ def fork_comparison(
     return out
 
 
+def load_version_ari(path: Path) -> list[dict[str, Any]]:
+    """
+    Read the ARI records written by `compare_versions.py`.
+
+    :param path: JSONL file, one record per line.
+    :returns: The records; empty when the file is missing.
+    """
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+TRITON_PREFIX = "emeans-gpu-triton-"
+VERSION_LISTED = 10
+
+
+def _spread(values: list[float]) -> str:
+    return f"{statistics.median(values):.2f} [{min(values):.2f}-{max(values):.2f}]"
+
+
+def version_comparison(
+    speed: list[dict[str, Any]],
+    prev_speed: list[dict[str, Any]],
+    precision: list[dict[str, Any]],
+    prev_precision: list[dict[str, Any]],
+    ari: list[dict[str, Any]],
+) -> list[str]:
+    """
+    Compare the Triton records of emeans-rocm 0.2.5 with those of 0.2.6 for the same cells.
+
+    :param speed: 0.2.6 speed records.
+    :param prev_speed: 0.2.5 speed records (same keys).
+    :param precision: 0.2.6 precision records.
+    :param prev_precision: 0.2.5 precision records (same keys).
+    :param ari: Records of `compare_versions.py` (ARI on the 100k subset and the smoke gate).
+    :returns: Markdown lines.
+    """
+    now = {r["key"]: r for r in speed if r.get("status") == "ok" and str(r.get("method", "")).startswith(TRITON_PREFIX)}
+    pairs = [(r, now[r["key"]]) for r in prev_speed if r.get("status") == "ok" and r.get("key") in now]
+    out = ["### emeans-rocm 0.2.5 vs 0.2.6", "", notes.VERSION_NOTE, ""]
+    ari_by_cell: dict[tuple, dict[str, Any]] = {(a["method"], a["data"], a["n"], a["k"]): a for a in ari}
+    outside: list[str] = []
+    if pairs:
+        warm = [b["seconds"] / a["seconds"] for a, b in pairs if a["timing"] == "warm" and a["seconds"]]
+        cold = [b["seconds"] / a["seconds"] for a, b in pairs if a["timing"] == "cold" and a["seconds"]]
+        line = f"- Speed: {len(pairs)} matching records."
+        if warm:
+            line += f" Warm time ratio 0.2.6 / 0.2.5, median {_spread(warm)}."
+        if cold:
+            line += f" Cold time ratio, median {_spread(cold)}."
+        out.append(line)
+        for precision_name in sorted({a.get("precision") or "" for a, _ in pairs}):
+            sel = [(a, b) for a, b in pairs if a.get("precision") == precision_name and a["timing"] == "cold"]
+            deltas = [abs(b["objective"] / a["objective"] - 1) for a, b in sel if a["kind"] == "main"]
+            if deltas:
+                same = sum(1 for d in deltas if d <= SAME_OBJECTIVE)
+                out.append(
+                    f"- {precision_name} main-cell objectives: largest difference {max(deltas) * 100:.3f} %, "
+                    f"{same} of {len(deltas)} records within 0.01 %."
+                )
+        out.append("")
+        groups: dict[tuple, dict[str, list[float]]] = defaultdict(lambda: {"old": [], "new": [], "w": [], "c": []})
+        for a, b in pairs:
+            cell = (a["method"], a["data"], a["n"], a["k"], a["kind"], a.get("passes_requested"))
+            if a["timing"] == "cold":
+                groups[cell]["old"].append(a["objective"])
+                groups[cell]["new"].append(b["objective"])
+            if a["seconds"]:
+                groups[cell]["w" if a["timing"] == "warm" else "c"].append(b["seconds"] / a["seconds"])
+        body = []
+        for cell, g in sorted(groups.items(), key=lambda kv: str(kv[0])):
+            method, data, n, k, kind, passes = cell
+            if not g["old"]:
+                continue
+            old_med, new_med = statistics.median(g["old"]), statistics.median(g["new"])
+            inside = min(g["old"]) <= new_med <= max(g["old"])
+            if not inside:
+                outside.append(f"{method} {_cell_label(data, n, k)} ({kind}, {passes or 'default'} passes)")
+            match = ari_by_cell.get((method, data, n, k)) if kind == "main" and passes is None else None
+            body.append(
+                [
+                    method, _cell_label(data, n, k), kind, _num(passes) if passes else "default",
+                    f"{old_med:.5g}", f"{new_med:.5g}", f"{(new_med / old_med - 1) * 100:+.3f} %",
+                    "yes" if inside else "no",
+                    f"{statistics.median(g['w']):.2f}" if g["w"] else "-",
+                    f"{statistics.median(g['c']):.2f}" if g["c"] else "-",
+                    f"{statistics.median(match['ari_new_old']):.4f}" if match else "-",
+                ]
+            )  # fmt: skip
+        out += _table(
+            ["method", "cell", "kind", "passes", "objective 0.2.5", "objective 0.2.6", "difference",
+             "inside 0.2.5 seed range", "warm ratio", "cold ratio", "ARI 0.2.6 vs 0.2.5"],
+            body,
+        )  # fmt: skip
+    else:
+        out += ["No matching Triton records.", ""]
+    if ari:
+        out += ["Assignment agreement (100k subset), median over seeds:", ""]
+        out += _table(
+            ["method", "cell", "ARI 0.2.6 vs 0.2.5", "ARI between 0.2.5 seeds", "ARI 0.2.5 rerun",
+             "objective in 0.2.5 range", "ARI at least seed-to-seed"],
+            [
+                [
+                    a["method"], _cell_label(a["data"], a["n"], a["k"]), f"{a['ari_new_old_median']:.4f}",
+                    f"{a['ari_old_seeds_median']:.4f}", f"{a['ari_old_rerun']:.4f}",
+                    "yes" if a["ok_objective"] else "no", "yes" if a["ok_ari"] else "no",
+                ]
+                for a in ari
+            ],
+        )  # fmt: skip
+    now_p = {r["key"]: r for r in precision if r.get("status") == "ok"}
+    p_pairs = [(r, now_p[r["key"]]) for r in prev_precision if r.get("status") == "ok" and r.get("key") in now_p]
+    if p_pairs:
+        diffs = [
+            abs(b["variants"][v]["drift_gap_median"] - a["variants"][v]["drift_gap_median"])
+            for a, b in p_pairs
+            for v in PRECISION_VARIANTS
+            if "drift_gap_median" in a["variants"].get(v, {}) and "drift_gap_median" in b["variants"].get(v, {})
+        ]
+        out.append(
+            f"- Precision: {len(p_pairs)} matching records; {sum(1 for d in diffs if d > DRIFT_DIFF)} of {len(diffs)} "
+            f"variant drift_gap medians differ by more than {DRIFT_DIFF} between the versions."
+        )
+        for v in REDUCED:
+            old_s = [a["variants"][v]["share_same_cluster"] for a, _ in p_pairs if v in a["variants"]]
+            new_s = [b["variants"][v]["share_same_cluster"] for _, b in p_pairs if v in b["variants"]]
+            if old_s and new_s:
+                out.append(
+                    f"- {v}: median share of documents in the same cluster as FP32, 0.2.5 "
+                    f"{statistics.median(old_s):.3f}, 0.2.6 {statistics.median(new_s):.3f}."
+                )
+        refs = [
+            abs(b["reference"]["objective"] / a["reference"]["objective"] - 1)
+            for a, b in p_pairs
+            if a.get("reference", {}).get("objective") and b.get("reference", {}).get("objective")
+        ]
+        if refs:
+            median_ref = statistics.median(refs) * 100
+            out.append(f"- Precision reference objective: median relative difference {median_ref:.3f} %.")
+        out.append("")
+    gates_ok = all(a.get("ok") for a in ari)
+    if pairs and gates_ok and not outside:
+        out.append(
+            "On these cells emeans-rocm 0.2.6 matches 0.2.5 within seed noise: every median objective lies inside "
+            "the 0.2.5 range over seeds and the ARI between versions is at least that between 0.2.5 seeds."
+        )
+    else:
+        listed = "; ".join(outside[:VERSION_LISTED]) + (" and more" if len(outside) > VERSION_LISTED else "")
+        failing = sum(1 for a in ari if not a.get("ok"))
+        out.append(
+            f"emeans-rocm 0.2.6 differs from 0.2.5 beyond seed noise in {len(outside)} cells"
+            + (f" ({listed})" if outside else "")
+            + f" and {failing} of {len(ari)} ARI settings fail the gate."
+        )
+    out.append("")
+    return out
+
+
 def precision_summary(records: list[dict[str, Any]]) -> list[str]:
     """
     Summarise reduced-precision drift against the FP32 other-seed baseline, per cell.
@@ -1572,6 +1735,9 @@ def render(
     precision_records: list[dict[str, Any]] | None = None,
     fork_speed: list[dict[str, Any]] | None = None,
     fork_precision: list[dict[str, Any]] | None = None,
+    prev_speed: list[dict[str, Any]] | None = None,
+    prev_precision: list[dict[str, Any]] | None = None,
+    version_ari: list[dict[str, Any]] | None = None,
 ) -> str:
     """
     Render RESULTS.md.
@@ -1583,6 +1749,10 @@ def render(
         says the study was not run.
     :param fork_speed: Speed records of the earlier fork build; with `fork_precision`, adds the build comparison.
     :param fork_precision: Precision records of the earlier fork build.
+    :param prev_speed: Speed records of emeans-rocm 0.2.5; with `prev_precision` and `version_ari`, adds the 0.2.5
+        vs 0.2.6 comparison and its cut.
+    :param prev_precision: Precision records of emeans-rocm 0.2.5.
+    :param version_ari: Records written by `compare_versions.py`.
     :returns: Markdown text.
     """
     rows = aggregate(records)
@@ -1603,9 +1773,12 @@ def render(
     lines += _render_gpu_engines(rows)
     if fork_speed is not None and fork_precision is not None:
         lines += fork_comparison(records, fork_speed, precision_records or [], fork_precision)
+    compare_versions = prev_speed is not None and prev_precision is not None and version_ari is not None
+    if prev_speed is not None and prev_precision is not None and version_ari is not None:
+        lines += version_comparison(records, prev_speed, precision_records or [], prev_precision, version_ari)
     lines += ["## Pass sweep", ""]
     lines += _sweep_tables(rows) or ["No sweep records.", ""]
-    lines += _render_cuts(records, rows, reaches)
+    lines += _render_cuts(records, rows, reaches, extra_cuts=(notes.VERSION_ARI_CUT,) if compare_versions else ())
     lines += ["## Not run", ""]
     lines += _not_run(records)
     if precision_records is not None:
@@ -1677,6 +1850,18 @@ def main() -> int:
     parser.add_argument("--precision", type=Path, default=None)
     parser.add_argument("--fork-speed", type=Path, default=None, help="speed records of the earlier fork build")
     parser.add_argument("--fork-precision", type=Path, default=None, help="precision records of the fork build")
+    parser.add_argument(
+        "--prev-speed", type=Path, default=None, help="emeans-rocm 0.2.5 speed records (speed-emeans-rocm-0.2.5.jsonl)"
+    )
+    parser.add_argument(
+        "--prev-precision",
+        type=Path,
+        default=None,
+        help="emeans-rocm 0.2.5 precision records (precision-emeans-rocm-0.2.5.jsonl)",
+    )
+    parser.add_argument(
+        "--version-ari", type=Path, default=None, help="records written by compare_versions.py (ARI and gate)"
+    )
     args = parser.parse_args()
     smoke_dir = BENCH_DIR / "scratch" / "smoke"
     results = args.results or (smoke_dir / "speed.jsonl" if args.smoke else BENCH_DIR / "results" / "speed.jsonl")
@@ -1706,12 +1891,18 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     fork_speed = load_records(args.fork_speed) if args.fork_speed else None
     fork_precision = load_records(args.fork_precision) if args.fork_precision else None
+    prev_speed = load_records(args.prev_speed) if args.prev_speed else None
+    prev_precision = load_records(args.prev_precision) if args.prev_precision else None
+    version_ari = load_version_ari(args.version_ari) if args.version_ari else None
     text = render(
         records,
         smoke=args.smoke,
         precision_records=precision_records,
         fork_speed=fork_speed,
         fork_precision=fork_precision,
+        prev_speed=prev_speed,
+        prev_precision=prev_precision,
+        version_ari=version_ari,
     )
     out.write_text(text, encoding="utf-8")
     sys.stderr.write(f"wrote {out}\n")
