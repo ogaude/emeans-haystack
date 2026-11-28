@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- emeans-rocm 0.2.9 is tested: `hatch run gpu-fork:gpu-tests` on an RX 9060 XT gives 19 passed, 6 skipped, as on 0.2.6. The supported range stays `>=0.2.5,<0.3`. The local `gpu-fork` env now pins `emeans-rocm==0.2.9`.
+- The benchmark env `bench-gpu-fork` stays on `emeans-rocm==0.2.6`, so the published benchmark and determinism figures, measured on 0.2.6, remain reproducible.
+- No code or API change: the public API and the `.npz` model format are unchanged.
+
 ## 0.1.2
 
 - The README now states the supported emeans-rocm range (`>=0.2.5,<0.3`) and what happens outside it: a release outside the range is not used, GPU fits run on the stock faiss-cpu e-means engine (on AMD in native FP32), a warning (once per process) names the installed version and the range, and `stats["emeans_source"]` is `"faiss-cpu <version>"`.

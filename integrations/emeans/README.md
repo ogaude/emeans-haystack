@@ -37,7 +37,7 @@ probe (for example, no Triton in your ROCm PyTorch), fits run in native FP32, an
 `stats["fallback_reason"]` give the probe error. If every one of its GPU backends fails the probe on your GPU, the
 stock faiss-cpu e-means engine is tried on the GPU in native FP32 before falling back to the CPU; a warning and
 `stats["fallback_reason"]` name the backends that failed. CPU fits always use the faiss-cpu e-means. The fitter's
-`stats["emeans_source"]` names the package and version that ran, for example `"emeans-rocm 0.2.6"` or
+`stats["emeans_source"]` names the package and version that ran, for example `"emeans-rocm 0.2.9"` or
 `"faiss-cpu 1.16.0"`, and `stats["backend"]` which backend ran.
 
 The package passes `unused_threshold=0.1` (`0.0` when d <= 2) to every e-means engine, so it keeps mass-based
@@ -106,7 +106,7 @@ Refer to the general [Contribution Guidelines](https://github.com/deepset-ai/hay
 
 GPU tests are marked `integration` and `gpu`, so `hatch run test:unit` and CI never run them. They are local
 only: run them with `hatch run gpu:gpu-tests` (upstream e-means) or `hatch run gpu-fork:gpu-tests` (installs
-`emeans-rocm` 0.2.6 from PyPI). They skip when PyTorch sees no GPU.
+`emeans-rocm` 0.2.9 from PyPI). They skip when PyTorch sees no GPU.
 
 ## License
 

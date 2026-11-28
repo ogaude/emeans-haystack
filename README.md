@@ -192,7 +192,7 @@ hatch run docs             # build the API docs
 ```
 
 GPU tests are marked `integration` and `gpu`, so `hatch run test:unit` and CI never run them. They are local only:
-`hatch run gpu:gpu-tests` (upstream e-means) or `hatch run gpu-fork:gpu-tests` (installs `emeans-rocm` 0.2.6 from
+`hatch run gpu:gpu-tests` (upstream e-means) or `hatch run gpu-fork:gpu-tests` (installs `emeans-rocm` 0.2.9 from
 PyPI). They skip when PyTorch sees no GPU. The `gpu` env installs an exact ROCm build of torch from AMD's index; the
 comment above `[tool.hatch.envs.gpu]` in `integrations/emeans/pyproject.toml` records the accepted risk of that setup.
 
