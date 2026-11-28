@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.3
 
 - emeans-rocm 0.2.9 is tested: `hatch run gpu-fork:gpu-tests` on an RX 9060 XT gives 19 passed, 6 skipped, as on 0.2.6. The supported range stays `>=0.2.5,<0.3`. The local `gpu-fork` env now pins `emeans-rocm==0.2.9`.
 - The benchmark env `bench-gpu-fork` stays on `emeans-rocm==0.2.6`, so the published benchmark and determinism figures, measured on 0.2.6, remain reproducible.
+- The GitHub README's reproducible-fits paragraph now says which GPU paths sum batch statistics without atomic additions: with cluster revival on (every fit at d > 2), emeans-rocm 0.2.6 and later do so on the Triton backend up to d = 4,096.
 - No code or API change: the public API and the `.npz` model format are unchanged.
 
 ## 0.1.2
