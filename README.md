@@ -112,14 +112,19 @@ Use FP32 when stable `cluster_id`s matter: FP16/BF16 objectives stay close to FP
 document assignments almost as much as reseeding does.
 
 **Reproducible GPU fits:** `deterministic=False` is the default. With it, two GPU fits with the same `seed` can end in
-different clusterings. emeans-rocm 0.2.6 sums FP32/BF16 batch statistics without atomic additions only at d ≥ 128; every
-other path, including every d < 128, uses atomic additions. `deterministic=True` turns on
+different clusterings wherever batch statistics are summed with atomic additions. This package fits with cluster revival
+on (`unused_threshold=0.1`) at every d > 2. With revival on, emeans-rocm 0.2.6 and later sum floating-point batch
+statistics on the Triton backend (`stats["backend"]` `"gpu-triton"`) from label-sorted rows, without atomic additions,
+up to d = 4,096. Other GPU paths may use atomic additions: d > 4,096, d <= 2 (no revival), the PyTorch backend
+(`"gpu-pytorch"`), including the stock faiss-cpu e-means engine without emeans-rocm. `deterministic=True` turns on
 `torch.use_deterministic_algorithms(True)` for the duration of training and then restores the previous setting. The
 setting is process-wide, so other GPU work in the process runs deterministically meanwhile. On NVIDIA, also export
 `CUBLAS_WORKSPACE_CONFIG=:4096:8` before starting the process. On CPU the parameter has no effect: CPU training is
 already deterministic. Measured on an RX 9060 XT with emeans-rocm 0.2.6 (Triton, FP32, d = 768): an FP32 rerun with
 `deterministic=True` gave identical centroids, assignments and objective in all 48 cells of the precision study
-([benchmarks/RESULTS.md](benchmarks/RESULTS.md)). Runs without `deterministic=True`, and d < 128, were not measured.
+([benchmarks/RESULTS.md](benchmarks/RESULTS.md)). Runs without `deterministic=True` were not measured by this package;
+the [emeans-rocm README](https://github.com/ogaude/e-means-rocm) reports FP32, FP16, BF16 and FP8 runs at d = 768
+(Triton, revival on) as bit-identical without deterministic mode on the same GPU.
 
 ## Benchmarks
 
